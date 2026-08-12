@@ -87,27 +87,21 @@ cd /opt/nagara-indexer
 sudo -u nagara npm ci --omit=dev=false
 ```
 
-⚠️ **The shared decoder is a relative dependency.** `package.json` points
-`@nusameta/nagara-chain` at `file:../nagara-chain-core`, the package the frontend
-and this service share so their decoding can never diverge. A bare clone has no
-such directory and `npm ci` will fail. Either clone it alongside:
+**The shared decoder comes from git.** `package.json` pins
+`@nusameta/nagara-chain` to `github:dapsverse/nagara-chain-core#v0.1.0` — the
+package this service and the frontend share so their decoding can never diverge.
+Nothing to arrange locally, but that repository is **private**, so the `nagara`
+user needs git access to it or `npm ci` fails on the fetch. Either give it a deploy
+key, or clone with a token:
 
 ```bash
-sudo -u nagara git clone <CHAIN_CORE_REPO_URL> /opt/nagara-chain-core
+sudo -u nagara git config --global \
+  url."https://<TOKEN>@github.com/".insteadOf "https://github.com/"
 ```
 
-...so that `/opt/nagara-chain-core` sits beside `/opt/nagara-indexer`, or switch
-the dependency to a pinned git reference and re-run `npm ci`:
-
-```jsonc
-"@nusameta/nagara-chain": "github:dapsverse/nagara-chain-core#v0.1.0"
-```
-
-The git reference is preferable in production: it pins a version, so this service
-and the frontend cannot end up on different decoders.
-
-Note also that `npm start` runs Node with `--preserve-symlinks`. That is required,
-not cosmetic — see the shared package's README for what breaks without it.
+To move to a newer decoder, bump the tag in `package.json`, `npm ci`, and restart.
+Bump it in the frontend at the same time — a version skew between the two is the
+exact failure the shared package exists to prevent.
 
 `npm ci` must install devDependencies: the service runs TypeScript directly
 through `tsx`, so `tsx` is required at runtime. Do **not** pass `--omit=dev`.
@@ -302,8 +296,11 @@ axis stays honest.
 
 ## Note on the shared decoder
 
-`src/decode.ts`, `src/format.ts` and `src/types.ts` are copies of the frontend's
-chain-decoding modules. They are what make an indexed row agree with what the
-explorer shows live. **They are duplicated across two repositories and can
-drift.** If you change how a transaction is classified in one, change it in the
-other, or promote these three files into a shared package.
+Extrinsic decoding, amount formatting and the NKRI08 token standard are **not** in
+this repository. They come from `@nusameta/nagara-chain`, imported by the frontend
+too. That is what makes an indexed row agree with what the explorer shows live.
+
+So a change to how a transaction is classified is a change to that package: commit
+it there, tag a release, and bump the tag in both hosts. Do not vendor a local copy
+back into `src/` — the two used to be duplicated files kept in sync by hand, which
+is what this arrangement replaced.
