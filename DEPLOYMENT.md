@@ -87,6 +87,28 @@ cd /opt/nagara-indexer
 sudo -u nagara npm ci --omit=dev=false
 ```
 
+⚠️ **The shared decoder is a relative dependency.** `package.json` points
+`@nusameta/nagara-chain` at `file:../nagara-chain-core`, the package the frontend
+and this service share so their decoding can never diverge. A bare clone has no
+such directory and `npm ci` will fail. Either clone it alongside:
+
+```bash
+sudo -u nagara git clone <CHAIN_CORE_REPO_URL> /opt/nagara-chain-core
+```
+
+...so that `/opt/nagara-chain-core` sits beside `/opt/nagara-indexer`, or switch
+the dependency to a pinned git reference and re-run `npm ci`:
+
+```jsonc
+"@nusameta/nagara-chain": "github:dapsverse/nagara-chain-core#v0.1.0"
+```
+
+The git reference is preferable in production: it pins a version, so this service
+and the frontend cannot end up on different decoders.
+
+Note also that `npm start` runs Node with `--preserve-symlinks`. That is required,
+not cosmetic — see the shared package's README for what breaks without it.
+
 `npm ci` must install devDependencies: the service runs TypeScript directly
 through `tsx`, so `tsx` is required at runtime. Do **not** pass `--omit=dev`.
 
