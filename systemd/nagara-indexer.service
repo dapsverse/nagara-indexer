@@ -1,0 +1,34 @@
+[Unit]
+Description=Nagara chain indexer and read API
+Documentation=file:///opt/nagara-indexer/DEPLOYMENT.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=nagara
+Group=nagara
+WorkingDirectory=/opt/nagara-indexer
+EnvironmentFile=/opt/nagara-indexer/.env
+ExecStart=/usr/bin/npm start
+
+# The chain workers hold long-lived websockets; a crash should reconnect, not
+# stay dead. Backfill progress is a database cursor, so a restart resumes.
+Restart=always
+RestartSec=10
+
+# Journald owns the logs: `journalctl -u nagara-indexer -f`.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nagara-indexer
+
+# The service only needs to read its own directory and reach the network.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/nagara-indexer
+
+[Install]
+WantedBy=multi-user.target

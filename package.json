@@ -1,0 +1,25 @@
+{
+  "name": "nagara-indexer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Indexes the Nagara chain into Postgres and serves it over HTTP.",
+  "scripts": {
+    "dev": "dotenv -e .env -- tsx watch src/index.ts",
+    "start": "dotenv -e .env -- tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@polkadot/api": "16.4.9",
+    "@polkadot/util": "^13.5.7",
+    "@polkadot/util-crypto": "^13.5.7",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/pg": "^8",
+    "dotenv-cli": "^10",
+    "tsx": "^4",
+    "typescript": "^5"
+  }
+}
