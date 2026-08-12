@@ -8,6 +8,9 @@ import {
 } from "./decode.js";
 import type { ChainExtrinsic } from "./types.js";
 import { getPool } from "./db.js";
+import { SS58_FORMAT } from "./config.js";
+import { decodeStandardTransfer } from "./standard.js";
+import { detectToken, type TokenInfo } from "./detectToken.js";
 
 type WeightLike = { refTime: { toBigInt: () => bigint } };
 type BlockWeightsConst = { maxBlock: WeightLike };
@@ -25,7 +28,51 @@ type BlockRow = {
   weightMax: number;
 };
 
-export type FetchedBlock = { block: BlockRow; transactions: ChainExtrinsic[] };
+export type ContractSeen = {
+  codeHash: string | null;
+  /** Present only the first time a contract is probed. */
+  token: TokenInfo | null;
+  probed: boolean;
+};
+
+export type FetchedBlock = {
+  block: BlockRow;
+  transactions: ChainExtrinsic[];
+  /** Every contract this block touched, with what we know about it. */
+  contracts: Map<string, ContractSeen>;
+};
+
+/** Probed once per address per process; token identity does not change. */
+const tokenCache = new Map<string, TokenInfo | null>();
+
+/**
+ * Code hashes change only on upgrade, so one lookup per address per process is
+ * enough — and it keeps the backfill from re-querying the same token thousands
+ * of times.
+ */
+const codeHashCache = new Map<string, string | null>();
+
+async function codeHashOf(
+  api: ApiPromise,
+  address: string
+): Promise<string | null> {
+  const cached = codeHashCache.get(address);
+  if (cached !== undefined) return cached;
+
+  let hash: string | null = null;
+  try {
+    const info = (await api.query.contracts.contractInfoOf(address)) as unknown as {
+      isSome: boolean;
+      unwrap: () => { codeHash: { toHex: () => string } };
+    };
+    hash = info.isSome ? info.unwrap().codeHash.toHex() : null;
+  } catch {
+    // A terminated contract has no info; the address is still worth recording.
+    hash = null;
+  }
+  codeHashCache.set(address, hash);
+  return hash;
+}
 
 /**
  * Reads one block and decodes it with the very same functions the UI uses, so an
@@ -61,6 +108,33 @@ export async function fetchBlock(
     timestamp: timestamp.toISOString(),
   });
 
+  const decodedListed = decoded.filter(isListedTransaction);
+
+  // Every contract this block interacted with, whether it was the call target or
+  // merely emitted an event.
+  const addresses = new Set<string>();
+  for (const tx of decodedListed) {
+    if (tx.contract) addresses.add(tx.contract);
+    for (const emitted of tx.contractEmitted) addresses.add(emitted.contract);
+  }
+  const contracts = new Map<string, ContractSeen>();
+  for (const address of addresses) {
+    const codeHash = await codeHashOf(api, address);
+
+    // Probe each contract once: is it a token, and what does it call itself?
+    let probed = false;
+    if (!tokenCache.has(address)) {
+      tokenCache.set(address, await detectToken(api, address));
+      probed = true;
+    }
+
+    contracts.set(address, {
+      codeHash,
+      token: tokenCache.get(address) ?? null,
+      probed,
+    });
+  }
+
   return {
     block: {
       number,
@@ -76,7 +150,8 @@ export async function fetchBlock(
     },
     // Only listable activity is stored; inherents would be 99% of the rows and
     // the block's own extrinsics_count already records them.
-    transactions: decoded.filter(isListedTransaction),
+    transactions: decodedListed,
+    contracts,
   };
 }
 
@@ -160,6 +235,135 @@ export async function persistBlocks(
          VALUES ${txRows.join(",")}
          ON CONFLICT (network, block_number, extrinsic_index) DO NOTHING`,
         txValues
+      );
+    }
+
+    // Raw contract event payloads. Undecodable today without the emitting
+    // contract's ABI, which is exactly why the bytes are kept.
+    const events = fetched.flatMap((entry) =>
+      entry.transactions.flatMap((tx) =>
+        tx.contractEmitted.map((emitted, eventIndex) => ({
+          blockNumber: tx.blockNumber,
+          extrinsicIndex: tx.extrinsicIndex,
+          eventIndex,
+          contract: emitted.contract,
+          data: Buffer.from(emitted.data.replace(/^0x/, ""), "hex"),
+        }))
+      )
+    );
+
+    if (events.length > 0) {
+      const values: unknown[] = [];
+      const rows = events.map((event, i) => {
+        const o = i * 6;
+        values.push(
+          network,
+          event.blockNumber,
+          event.extrinsicIndex,
+          event.eventIndex,
+          event.contract,
+          event.data
+        );
+        return `($${o + 1},$${o + 2},$${o + 3},$${o + 4},$${o + 5},$${o + 6})`;
+      });
+
+      await client.query(
+        `INSERT INTO tx_event (network, block_number, extrinsic_index,
+                               event_index, contract, data)
+         VALUES ${rows.join(",")}
+         ON CONFLICT (network, block_number, extrinsic_index, event_index)
+           DO NOTHING`,
+        values
+      );
+    }
+
+    // Contract registry. first_seen_block only ever moves backwards, so the
+    // backfill filling in older blocks corrects it rather than overwriting it.
+    const contractRows = new Map<
+      string,
+      { seen: ContractSeen; block: number }
+    >();
+    for (const entry of fetched) {
+      for (const [address, seen] of entry.contracts) {
+        const existing = contractRows.get(address);
+        if (!existing || entry.block.number < existing.block) {
+          contractRows.set(address, { seen, block: entry.block.number });
+        }
+      }
+    }
+
+    if (contractRows.size > 0) {
+      const values: unknown[] = [];
+      const rows = [...contractRows.entries()].map(([address, row], i) => {
+        const o = i * 7;
+        values.push(
+          network,
+          address,
+          row.seen.codeHash,
+          row.block,
+          // Only a fresh probe may write identity; a cached miss must not
+          // overwrite what an earlier probe already established.
+          row.seen.probed ? row.seen.token !== null : null,
+          row.seen.token?.name ?? null,
+          row.seen.token?.symbol ?? null
+        );
+        return `($${o + 1},$${o + 2},$${o + 3},$${o + 4},$${o + 5},$${o + 6},$${o + 7})`;
+      });
+
+      await client.query(
+        `INSERT INTO contract (network, address, code_hash, first_seen_block,
+                               is_token, token_name, token_symbol, checked_at)
+         VALUES ${rows.map((r) => r.replace(/\)$/, ",now())")).join(",")}
+         ON CONFLICT (network, address) DO UPDATE SET
+           code_hash        = COALESCE(EXCLUDED.code_hash, contract.code_hash),
+           first_seen_block = LEAST(contract.first_seen_block,
+                                    EXCLUDED.first_seen_block),
+           is_token         = COALESCE(EXCLUDED.is_token, contract.is_token),
+           token_name       = COALESCE(EXCLUDED.token_name, contract.token_name),
+           token_symbol     = COALESCE(EXCLUDED.token_symbol, contract.token_symbol),
+           checked_at       = GREATEST(contract.checked_at, EXCLUDED.checked_at)`,
+        values
+      );
+    }
+
+    // NKRI08 transfers, read straight from the call selector. No ABI needed:
+    // the selector is derived from the message name, so any contract that spells
+    // its message `transfer` is decodable. Flagged 'inferred' because a matching
+    // name and layout is not proof the contract means the same thing.
+    const transfers = fetched.flatMap((entry) =>
+      entry.transactions.flatMap((tx) => {
+        if (tx.kind !== "contractCall" || !tx.callData || !tx.contract) return [];
+        const decoded = decodeStandardTransfer(tx.callData, SS58_FORMAT);
+        if (!decoded) return [];
+        return [{ tx, decoded }];
+      })
+    );
+
+    if (transfers.length > 0) {
+      const values: unknown[] = [];
+      const rows = transfers.map(({ tx, decoded }, i) => {
+        const o = i * 9;
+        values.push(
+          network,
+          tx.blockNumber,
+          tx.extrinsicIndex,
+          tx.contract,
+          decoded.message,
+          decoded.from,
+          decoded.to,
+          decoded.amountRaw,
+          tx.success
+        );
+        return `($${o + 1},$${o + 2},$${o + 3},$${o + 4},$${o + 5},$${o + 6},$${o + 7},$${o + 8},'inferred',$${o + 9})`;
+      });
+
+      await client.query(
+        `INSERT INTO token_transfer (network, block_number, extrinsic_index, token,
+                                     message, from_address, to_address, amount_raw,
+                                     provenance, success)
+         VALUES ${rows.join(",")}
+         ON CONFLICT (network, block_number, extrinsic_index) DO NOTHING`,
+        values
       );
     }
 

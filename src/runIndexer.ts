@@ -5,6 +5,7 @@ import {
   FETCH_CONCURRENCY,
   NETWORKS,
   TIP_BATCH,
+  TIP_STALL_RETRIES,
   backfillWsUrl,
   hasArchive,
   type NetworkId,
@@ -60,9 +61,64 @@ async function writeCursors(
   );
 }
 
+async function recordGap(
+  network: NetworkId,
+  fromBlock: number,
+  toBlock: number,
+  reason: string
+): Promise<void> {
+  await getPool().query(
+    `INSERT INTO indexer_gap (network, from_block, to_block, reason)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (network, from_block) DO UPDATE SET
+       to_block = GREATEST(indexer_gap.to_block, EXCLUDED.to_block),
+       reason   = EXCLUDED.reason`,
+    [network, fromBlock, toBlock, reason]
+  );
+}
+
+/**
+ * Lowest block in (from..to] the node will actually serve.
+ *
+ * Found by bisection rather than by walking: a gap left by downtime can be
+ * thousands of blocks, and crawling it in batches would take minutes and litter
+ * the gap table with one row per batch. ~12 probes settle a 4,000-block hole.
+ */
+async function findOldestAvailable(
+  api: ApiPromise,
+  from: number,
+  to: number
+): Promise<number | null> {
+  const available = async (block: number): Promise<boolean> => {
+    try {
+      const hash = await api.rpc.chain.getBlockHash(block);
+      return Boolean(await api.derive.chain.getBlock(hash));
+    } catch {
+      return false;
+    }
+  };
+
+  if (await available(from)) return from;
+  if (!(await available(to))) return null;
+
+  let low = from;
+  let high = to;
+  while (high - low > 1) {
+    const mid = Math.floor((low + high) / 2);
+    if (await available(mid)) high = mid;
+    else low = mid;
+  }
+  return high;
+}
+
 /** Forward loop: keep the newest blocks written, in near real time. */
 async function followTip(api: ApiPromise, network: NetworkId): Promise<void> {
   let busy = false;
+  // Consecutive failures on the same block. A block the node has pruned will
+  // never appear, so retrying it forever would freeze the tip permanently —
+  // which is what any downtime longer than the pruning window would cause.
+  let stalledAt: number | null = null;
+  let stallCount = 0;
 
   const catchUp = async () => {
     if (busy) return;
@@ -89,14 +145,50 @@ async function followTip(api: ApiPromise, network: NetworkId): Promise<void> {
         if (advanceTo >= from) await writeCursors(network, { lastBlock: advanceTo });
 
         if (missing.length > 0) {
+          const firstMissing = Math.min(...missing);
+
+          if (stalledAt === firstMissing) stallCount += 1;
+          else {
+            stalledAt = firstMissing;
+            stallCount = 1;
+          }
+
+          if (stallCount < TIP_STALL_RETRIES) {
+            log(
+              network,
+              `tip stalled at #${n(firstMissing)} — node did not serve ` +
+                `${missing.length} block(s); retry ${stallCount}/${TIP_STALL_RETRIES}`
+            );
+            break;
+          }
+
+          // Given up on this block. Find where the node's history actually
+          // begins so the whole hole is crossed once, instead of one batch at a
+          // time, and record it as a single gap.
+          const resumeAt = await findOldestAvailable(api, firstMissing, head);
+          const gapEnd = (resumeAt ?? head + 1) - 1;
+
+          await recordGap(
+            network,
+            firstMissing,
+            gapEnd,
+            "pruned before the indexer could read them"
+          );
+          await writeCursors(network, { lastBlock: gapEnd });
+          lastBlock = gapEnd;
+          stalledAt = null;
+          stallCount = 0;
           log(
             network,
-            `tip stalled at #${n(Math.min(...missing))} — node did not serve ` +
-              `${missing.length} block(s); will retry`
+            `skipped #${n(firstMissing)}–#${n(gapEnd)} (${n(gapEnd - firstMissing + 1)} ` +
+              `blocks): pruned and unrecoverable. Recorded as one gap; resuming ` +
+              `from #${n(gapEnd + 1)}.`
           );
-          break;
+          continue;
         }
 
+        stalledAt = null;
+        stallCount = 0;
         lastBlock = advanceTo;
         log(
           network,
