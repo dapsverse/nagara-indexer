@@ -71,3 +71,6 @@ export const HTTP_PORT = Number(env("PORT") ?? 8787);
  * and retrying one forever would freeze the tip.
  */
 export const TIP_STALL_RETRIES = 3;
+
+/** Nagara ss58 prefix, from the chain properties. */
+export const SS58_FORMAT = 42;

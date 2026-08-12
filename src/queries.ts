@@ -203,3 +203,60 @@ export async function listContracts(
     firstSeenBlock: Number(row.first_seen_block),
   }));
 }
+
+export type TokenTransferRow = {
+  blockNumber: number;
+  extrinsicIndex: number;
+  token: string;
+  message: string;
+  from: string | null;
+  to: string;
+  amountRaw: string;
+  provenance: string;
+  success: boolean;
+  timestamp: string;
+};
+
+/**
+ * Decoded NKRI08 transfers, newest first. `provenance` travels with every row so
+ * a caller can tell a standard-inferred amount from an ABI-verified one.
+ */
+export async function listTokenTransfers(
+  network: NetworkId,
+  limit: number,
+  filters: { before?: number; token?: string; address?: string }
+): Promise<TokenTransferRow[]> {
+  const { rows } = await getPool().query(
+    `SELECT tt.block_number, tt.extrinsic_index, tt.token, tt.message,
+            tt.from_address, tt.to_address, tt.amount_raw, tt.provenance,
+            tt.success, b.ts
+       FROM token_transfer tt
+       JOIN block b
+         ON b.network = tt.network AND b.block_number = tt.block_number
+      WHERE tt.network = $1
+        AND ($3::bigint IS NULL OR tt.block_number < $3)
+        AND ($4::text IS NULL OR tt.token = $4)
+        AND ($5::text IS NULL OR tt.from_address = $5 OR tt.to_address = $5)
+      ORDER BY tt.block_number DESC, tt.extrinsic_index DESC
+      LIMIT $2`,
+    [
+      network,
+      limit,
+      filters.before ?? null,
+      filters.token ?? null,
+      filters.address ?? null,
+    ]
+  );
+  return rows.map((row) => ({
+    blockNumber: Number(row.block_number),
+    extrinsicIndex: Number(row.extrinsic_index),
+    token: row.token,
+    message: row.message,
+    from: row.from_address,
+    to: row.to_address,
+    amountRaw: row.amount_raw,
+    provenance: row.provenance,
+    success: row.success,
+    timestamp: row.ts.toISOString(),
+  }));
+}

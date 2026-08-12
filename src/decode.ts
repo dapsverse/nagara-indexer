@@ -84,6 +84,7 @@ function decodeContract(
   amount: string | null;
   amountRaw: string | null;
   dest: string | null;
+  callData: string | null;
   contractEvents: number;
   emitted: { contract: string; data: string }[];
 } | null {
@@ -125,6 +126,7 @@ function decodeContract(
       amount: withValue(args[1]),
       amountRaw: rawValue(args[1]),
       dest,
+      callData: args[4]?.toHex?.() ?? null,
       contractEvents,
       emitted,
     };
@@ -141,6 +143,7 @@ function decodeContract(
       amount: withValue(args[0]),
       amountRaw: rawValue(args[0]),
       dest: contract,
+      callData: args[4]?.toHex?.() ?? null,
       contractEvents,
       emitted,
     };
@@ -154,6 +157,7 @@ function decodeContract(
       amount: null,
       amountRaw: null,
       dest: null,
+      callData: null,
       contractEvents,
       emitted,
     };
@@ -168,6 +172,7 @@ function decodeContract(
       amount: null,
       amountRaw: null,
       dest,
+      callData: null,
       contractEvents,
       emitted,
     };
@@ -180,6 +185,7 @@ function decodeContract(
     amount: null,
     amountRaw: null,
     dest: null,
+    callData: null,
     contractEvents,
     emitted,
   };
@@ -254,6 +260,7 @@ export function decodeExtrinsic({
     kind: contract?.kind ?? (transfer.amount ? "transfer" : "other"),
     contract: contract?.contract ?? null,
     codeHash: contract?.codeHash ?? null,
+    callData: contract?.callData ?? null,
     contractEvents: contract?.contractEvents ?? 0,
     contractEmitted: contract?.emitted ?? [],
   };

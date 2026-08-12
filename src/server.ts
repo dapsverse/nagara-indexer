@@ -12,6 +12,7 @@ import {
   indexerStatus,
   listBlocks,
   listContracts,
+  listTokenTransfers,
   listTransactions,
 } from "./queries.js";
 
@@ -126,6 +127,22 @@ export function createServer(): http.Server {
                 : undefined,
               address: params.get("address") ?? undefined,
               contract: params.get("contract") ?? undefined,
+            }),
+          });
+          return;
+        }
+
+        case "/token-transfers": {
+          const network = readNetwork(params);
+          const limit = readInt(params, "limit", 25, MAX_PAGE_SIZE);
+          send(response, 200, {
+            network,
+            items: await listTokenTransfers(network, limit, {
+              before: params.get("before")
+                ? Number(params.get("before"))
+                : undefined,
+              token: params.get("token") ?? undefined,
+              address: params.get("address") ?? undefined,
             }),
           });
           return;

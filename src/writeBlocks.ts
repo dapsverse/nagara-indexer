@@ -8,6 +8,8 @@ import {
 } from "./decode.js";
 import type { ChainExtrinsic } from "./types.js";
 import { getPool } from "./db.js";
+import { SS58_FORMAT } from "./config.js";
+import { decodeStandardTransfer } from "./standard.js";
 
 type WeightLike = { refTime: { toBigInt: () => bigint } };
 type BlockWeightsConst = { maxBlock: WeightLike };
@@ -278,6 +280,47 @@ export async function persistBlocks(
            code_hash        = COALESCE(EXCLUDED.code_hash, contract.code_hash),
            first_seen_block = LEAST(contract.first_seen_block,
                                     EXCLUDED.first_seen_block)`,
+        values
+      );
+    }
+
+    // NKRI08 transfers, read straight from the call selector. No ABI needed:
+    // the selector is derived from the message name, so any contract that spells
+    // its message `transfer` is decodable. Flagged 'inferred' because a matching
+    // name and layout is not proof the contract means the same thing.
+    const transfers = fetched.flatMap((entry) =>
+      entry.transactions.flatMap((tx) => {
+        if (tx.kind !== "contractCall" || !tx.callData || !tx.contract) return [];
+        const decoded = decodeStandardTransfer(tx.callData, SS58_FORMAT);
+        if (!decoded) return [];
+        return [{ tx, decoded }];
+      })
+    );
+
+    if (transfers.length > 0) {
+      const values: unknown[] = [];
+      const rows = transfers.map(({ tx, decoded }, i) => {
+        const o = i * 9;
+        values.push(
+          network,
+          tx.blockNumber,
+          tx.extrinsicIndex,
+          tx.contract,
+          decoded.message,
+          decoded.from,
+          decoded.to,
+          decoded.amountRaw,
+          tx.success
+        );
+        return `($${o + 1},$${o + 2},$${o + 3},$${o + 4},$${o + 5},$${o + 6},$${o + 7},$${o + 8},'inferred',$${o + 9})`;
+      });
+
+      await client.query(
+        `INSERT INTO token_transfer (network, block_number, extrinsic_index, token,
+                                     message, from_address, to_address, amount_raw,
+                                     provenance, success)
+         VALUES ${rows.join(",")}
+         ON CONFLICT (network, block_number, extrinsic_index) DO NOTHING`,
         values
       );
     }

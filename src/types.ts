@@ -67,6 +67,12 @@ export type ChainExtrinsic = {
   contract: string | null;
   /** Code hash, for uploads and code updates. */
   codeHash: string | null;
+  /**
+   * Raw ink! message data of a contract call: `[4-byte selector, ...SCALE args]`.
+   * The selector identifies the message by name alone, so a standard-conforming
+   * call can be interpreted without the contract's ABI.
+   */
+  callData: string | null;
   /** How many events the contract emitted — ink! event payloads need its ABI. */
   contractEvents: number;
   /**

@@ -118,3 +118,36 @@ CREATE TABLE IF NOT EXISTS block (
 );
 
 CREATE INDEX IF NOT EXISTS block_network_ts_idx ON block (network, ts DESC);
+
+-- Token movements decoded from NKRI08-conforming calls.
+--
+-- `provenance` records how much to trust the numbers:
+--   'inferred' — matched by selector and argument layout, with no ABI. The
+--                message name and signature line up, but nothing proves the
+--                contract means by `transfer` what the standard means.
+--   'verified' — the contract's ABI is known and confirmed the shape.
+-- Amounts from 'inferred' rows must be presented as such, never as settled fact.
+--
+-- Note this only captures transfers made by a direct call. Mints, burns and
+-- transfers triggered inside another contract appear only as events, which need
+-- the ABI — see tx_event.
+CREATE TABLE IF NOT EXISTS token_transfer (
+  network         TEXT   NOT NULL,
+  block_number    BIGINT NOT NULL,
+  extrinsic_index INT    NOT NULL,
+  token           TEXT   NOT NULL,
+  message         TEXT   NOT NULL,
+  from_address    TEXT,
+  to_address      TEXT   NOT NULL,
+  amount_raw      NUMERIC(39, 0) NOT NULL,
+  provenance      TEXT   NOT NULL,
+  success         BOOLEAN NOT NULL,
+  PRIMARY KEY (network, block_number, extrinsic_index)
+);
+
+CREATE INDEX IF NOT EXISTS token_transfer_token_idx
+  ON token_transfer (network, token, block_number DESC);
+CREATE INDEX IF NOT EXISTS token_transfer_from_idx
+  ON token_transfer (network, from_address) WHERE from_address IS NOT NULL;
+CREATE INDEX IF NOT EXISTS token_transfer_to_idx
+  ON token_transfer (network, to_address);
