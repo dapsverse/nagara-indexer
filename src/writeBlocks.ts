@@ -10,6 +10,7 @@ import type { ChainExtrinsic } from "./types.js";
 import { getPool } from "./db.js";
 import { SS58_FORMAT } from "./config.js";
 import { decodeStandardTransfer } from "./standard.js";
+import { detectToken, type TokenInfo } from "./detectToken.js";
 
 type WeightLike = { refTime: { toBigInt: () => bigint } };
 type BlockWeightsConst = { maxBlock: WeightLike };
@@ -27,12 +28,22 @@ type BlockRow = {
   weightMax: number;
 };
 
+export type ContractSeen = {
+  codeHash: string | null;
+  /** Present only the first time a contract is probed. */
+  token: TokenInfo | null;
+  probed: boolean;
+};
+
 export type FetchedBlock = {
   block: BlockRow;
   transactions: ChainExtrinsic[];
-  /** Contract address -> code hash, for every contract this block touched. */
-  contracts: Map<string, string | null>;
+  /** Every contract this block touched, with what we know about it. */
+  contracts: Map<string, ContractSeen>;
 };
+
+/** Probed once per address per process; token identity does not change. */
+const tokenCache = new Map<string, TokenInfo | null>();
 
 /**
  * Code hashes change only on upgrade, so one lookup per address per process is
@@ -106,9 +117,22 @@ export async function fetchBlock(
     if (tx.contract) addresses.add(tx.contract);
     for (const emitted of tx.contractEmitted) addresses.add(emitted.contract);
   }
-  const contracts = new Map<string, string | null>();
+  const contracts = new Map<string, ContractSeen>();
   for (const address of addresses) {
-    contracts.set(address, await codeHashOf(api, address));
+    const codeHash = await codeHashOf(api, address);
+
+    // Probe each contract once: is it a token, and what does it call itself?
+    let probed = false;
+    if (!tokenCache.has(address)) {
+      tokenCache.set(address, await detectToken(api, address));
+      probed = true;
+    }
+
+    contracts.set(address, {
+      codeHash,
+      token: tokenCache.get(address) ?? null,
+      probed,
+    });
   }
 
   return {
@@ -255,12 +279,15 @@ export async function persistBlocks(
 
     // Contract registry. first_seen_block only ever moves backwards, so the
     // backfill filling in older blocks corrects it rather than overwriting it.
-    const contractRows = new Map<string, { codeHash: string | null; block: number }>();
+    const contractRows = new Map<
+      string,
+      { seen: ContractSeen; block: number }
+    >();
     for (const entry of fetched) {
-      for (const [address, codeHash] of entry.contracts) {
+      for (const [address, seen] of entry.contracts) {
         const existing = contractRows.get(address);
         if (!existing || entry.block.number < existing.block) {
-          contractRows.set(address, { codeHash, block: entry.block.number });
+          contractRows.set(address, { seen, block: entry.block.number });
         }
       }
     }
@@ -268,18 +295,33 @@ export async function persistBlocks(
     if (contractRows.size > 0) {
       const values: unknown[] = [];
       const rows = [...contractRows.entries()].map(([address, row], i) => {
-        const o = i * 4;
-        values.push(network, address, row.codeHash, row.block);
-        return `($${o + 1},$${o + 2},$${o + 3},$${o + 4})`;
+        const o = i * 7;
+        values.push(
+          network,
+          address,
+          row.seen.codeHash,
+          row.block,
+          // Only a fresh probe may write identity; a cached miss must not
+          // overwrite what an earlier probe already established.
+          row.seen.probed ? row.seen.token !== null : null,
+          row.seen.token?.name ?? null,
+          row.seen.token?.symbol ?? null
+        );
+        return `($${o + 1},$${o + 2},$${o + 3},$${o + 4},$${o + 5},$${o + 6},$${o + 7})`;
       });
 
       await client.query(
-        `INSERT INTO contract (network, address, code_hash, first_seen_block)
-         VALUES ${rows.join(",")}
+        `INSERT INTO contract (network, address, code_hash, first_seen_block,
+                               is_token, token_name, token_symbol, checked_at)
+         VALUES ${rows.map((r) => r.replace(/\)$/, ",now())")).join(",")}
          ON CONFLICT (network, address) DO UPDATE SET
            code_hash        = COALESCE(EXCLUDED.code_hash, contract.code_hash),
            first_seen_block = LEAST(contract.first_seen_block,
-                                    EXCLUDED.first_seen_block)`,
+                                    EXCLUDED.first_seen_block),
+           is_token         = COALESCE(EXCLUDED.is_token, contract.is_token),
+           token_name       = COALESCE(EXCLUDED.token_name, contract.token_name),
+           token_symbol     = COALESCE(EXCLUDED.token_symbol, contract.token_symbol),
+           checked_at       = GREATEST(contract.checked_at, EXCLUDED.checked_at)`,
         values
       );
     }

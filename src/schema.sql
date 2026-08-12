@@ -87,6 +87,16 @@ CREATE TABLE IF NOT EXISTS contract (
 CREATE INDEX IF NOT EXISTS contract_code_hash_idx
   ON contract (network, code_hash);
 
+-- Token identity, probed by interface rather than read from an ABI: a contract
+-- that answers name/symbol/total_supply is a token, whoever deployed it.
+ALTER TABLE contract ADD COLUMN IF NOT EXISTS is_token BOOLEAN;
+ALTER TABLE contract ADD COLUMN IF NOT EXISTS token_name TEXT;
+ALTER TABLE contract ADD COLUMN IF NOT EXISTS token_symbol TEXT;
+ALTER TABLE contract ADD COLUMN IF NOT EXISTS checked_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS contract_is_token_idx
+  ON contract (network, is_token) WHERE is_token;
+
 -- Block ranges that can never be indexed, recorded rather than left invisible.
 --
 -- If the indexer is offline longer than the node's pruning window, the blocks it

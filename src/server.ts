@@ -13,6 +13,7 @@ import {
   listBlocks,
   listContracts,
   listTokenTransfers,
+  listTokens,
   listTransactions,
 } from "./queries.js";
 
@@ -145,6 +146,12 @@ export function createServer(): http.Server {
               address: params.get("address") ?? undefined,
             }),
           });
+          return;
+        }
+
+        case "/tokens": {
+          const network = readNetwork(params);
+          send(response, 200, { network, items: await listTokens(network) });
           return;
         }
 

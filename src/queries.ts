@@ -122,7 +122,10 @@ export async function listTransactions(
     `SELECT t.block_number, t.extrinsic_index, t.block_hash, t.extrinsic_hash,
             t.ts, t.kind, t.section, t.method, t.signer, t.dest, t.contract,
             t.amount_raw, t.fee_raw, t.success, t.error,
-            c.code_hash,
+            c.code_hash, c.token_symbol, c.is_token,
+            tt.message AS transfer_message, tt.from_address AS transfer_from,
+            tt.to_address AS transfer_to, tt.amount_raw AS transfer_amount,
+            tt.provenance AS transfer_provenance,
             COALESCE(
               (SELECT json_agg(json_build_object(
                         'eventIndex', e.event_index,
@@ -137,6 +140,10 @@ export async function listTransactions(
        FROM tx t
        LEFT JOIN contract c
          ON c.network = t.network AND c.address = t.contract
+       LEFT JOIN token_transfer tt
+         ON tt.network = t.network
+        AND tt.block_number = t.block_number
+        AND tt.extrinsic_index = t.extrinsic_index
       WHERE t.network = $1
         AND ($3::bigint IS NULL OR t.block_number < $3)
         AND ($4::text IS NULL OR t.signer = $4 OR t.dest = $4)
@@ -168,6 +175,23 @@ export async function listTransactions(
     contract: row.contract,
     /** Which ABI applies to `contract`, when the contract is known. */
     codeHash: row.code_hash ?? null,
+    /** Token identity of `contract`, probed by interface. */
+    tokenSymbol: row.token_symbol ?? null,
+    isToken: row.is_token ?? null,
+    /**
+     * The NKRI08 transfer this call performed, when it made one. `provenance`
+     * says how it was established — 'inferred' means selector-matched with no
+     * ABI, so the amount is a reading, not a receipt.
+     */
+    tokenTransfer: row.transfer_message
+      ? {
+          message: row.transfer_message as string,
+          from: (row.transfer_from as string | null) ?? null,
+          to: row.transfer_to as string,
+          amountRaw: row.transfer_amount as string,
+          provenance: row.transfer_provenance as string,
+        }
+      : null,
     amountRaw: row.amount_raw,
     feeRaw: row.fee_raw,
     success: row.success,
@@ -215,6 +239,8 @@ export type TokenTransferRow = {
   provenance: string;
   success: boolean;
   timestamp: string;
+  tokenSymbol: string | null;
+  tokenName: string | null;
 };
 
 /**
@@ -229,10 +255,12 @@ export async function listTokenTransfers(
   const { rows } = await getPool().query(
     `SELECT tt.block_number, tt.extrinsic_index, tt.token, tt.message,
             tt.from_address, tt.to_address, tt.amount_raw, tt.provenance,
-            tt.success, b.ts
+            tt.success, b.ts, c.token_symbol, c.token_name
        FROM token_transfer tt
        JOIN block b
          ON b.network = tt.network AND b.block_number = tt.block_number
+       LEFT JOIN contract c
+         ON c.network = tt.network AND c.address = tt.token
       WHERE tt.network = $1
         AND ($3::bigint IS NULL OR tt.block_number < $3)
         AND ($4::text IS NULL OR tt.token = $4)
@@ -258,5 +286,25 @@ export async function listTokenTransfers(
     provenance: row.provenance,
     success: row.success,
     timestamp: row.ts.toISOString(),
+    tokenSymbol: row.token_symbol ?? null,
+    tokenName: row.token_name ?? null,
+  }));
+}
+
+/** Contracts that answered the NKRI08 read interface. */
+export async function listTokens(network: NetworkId) {
+  const { rows } = await getPool().query(
+    `SELECT address, code_hash, token_name, token_symbol, first_seen_block
+       FROM contract
+      WHERE network = $1 AND is_token
+      ORDER BY first_seen_block ASC`,
+    [network]
+  );
+  return rows.map((row) => ({
+    address: row.address,
+    codeHash: row.code_hash ?? null,
+    name: row.token_name ?? null,
+    symbol: row.token_symbol ?? null,
+    firstSeenBlock: Number(row.first_seen_block),
   }));
 }
