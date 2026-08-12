@@ -88,10 +88,15 @@ sudo -u nagara npm ci --omit=dev=false
 ```
 
 **The shared decoder comes from git.** `package.json` pins
-`@nusameta/nagara-chain` to `github:dapsverse/nagara-chain-core#v0.1.0` — the
-package this service and the frontend share so their decoding can never diverge.
-The repository is public, so `npm ci` fetches it with no credentials and there is
-nothing to arrange: no deploy key, no sibling checkout.
+`@nusameta/nagara-chain` to
+`git+https://github.com/dapsverse/nagara-chain-core.git#v0.1.1` — the package this
+service and the frontend share so their decoding can never diverge. That repository
+is public, so `npm ci` needs no deploy key, no token, and no sibling checkout.
+
+`package-lock.json` records that resolution as `git+ssh://git@github.com/...`. That
+is npm normalising a hosted-GitHub URL and it is **not** a problem: verified with
+`npm ci` under `GIT_SSH_COMMAND=/usr/bin/false` and an empty `--cache`, which
+succeeded over https. Do not "fix" the lockfile.
 
 To move to a newer decoder, bump the tag in `package.json`, `npm ci`, and restart.
 Bump it in the frontend at the same time — a version skew between the two is the
