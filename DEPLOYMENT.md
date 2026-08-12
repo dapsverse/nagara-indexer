@@ -90,14 +90,8 @@ sudo -u nagara npm ci --omit=dev=false
 **The shared decoder comes from git.** `package.json` pins
 `@nusameta/nagara-chain` to `github:dapsverse/nagara-chain-core#v0.1.0` — the
 package this service and the frontend share so their decoding can never diverge.
-Nothing to arrange locally, but that repository is **private**, so the `nagara`
-user needs git access to it or `npm ci` fails on the fetch. Either give it a deploy
-key, or clone with a token:
-
-```bash
-sudo -u nagara git config --global \
-  url."https://<TOKEN>@github.com/".insteadOf "https://github.com/"
-```
+The repository is public, so `npm ci` fetches it with no credentials and there is
+nothing to arrange: no deploy key, no sibling checkout.
 
 To move to a newer decoder, bump the tag in `package.json`, `npm ci`, and restart.
 Bump it in the frontend at the same time — a version skew between the two is the
