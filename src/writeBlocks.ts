@@ -25,7 +25,41 @@ type BlockRow = {
   weightMax: number;
 };
 
-export type FetchedBlock = { block: BlockRow; transactions: ChainExtrinsic[] };
+export type FetchedBlock = {
+  block: BlockRow;
+  transactions: ChainExtrinsic[];
+  /** Contract address -> code hash, for every contract this block touched. */
+  contracts: Map<string, string | null>;
+};
+
+/**
+ * Code hashes change only on upgrade, so one lookup per address per process is
+ * enough — and it keeps the backfill from re-querying the same token thousands
+ * of times.
+ */
+const codeHashCache = new Map<string, string | null>();
+
+async function codeHashOf(
+  api: ApiPromise,
+  address: string
+): Promise<string | null> {
+  const cached = codeHashCache.get(address);
+  if (cached !== undefined) return cached;
+
+  let hash: string | null = null;
+  try {
+    const info = (await api.query.contracts.contractInfoOf(address)) as unknown as {
+      isSome: boolean;
+      unwrap: () => { codeHash: { toHex: () => string } };
+    };
+    hash = info.isSome ? info.unwrap().codeHash.toHex() : null;
+  } catch {
+    // A terminated contract has no info; the address is still worth recording.
+    hash = null;
+  }
+  codeHashCache.set(address, hash);
+  return hash;
+}
 
 /**
  * Reads one block and decodes it with the very same functions the UI uses, so an
@@ -61,6 +95,20 @@ export async function fetchBlock(
     timestamp: timestamp.toISOString(),
   });
 
+  const decodedListed = decoded.filter(isListedTransaction);
+
+  // Every contract this block interacted with, whether it was the call target or
+  // merely emitted an event.
+  const addresses = new Set<string>();
+  for (const tx of decodedListed) {
+    if (tx.contract) addresses.add(tx.contract);
+    for (const emitted of tx.contractEmitted) addresses.add(emitted.contract);
+  }
+  const contracts = new Map<string, string | null>();
+  for (const address of addresses) {
+    contracts.set(address, await codeHashOf(api, address));
+  }
+
   return {
     block: {
       number,
@@ -76,7 +124,8 @@ export async function fetchBlock(
     },
     // Only listable activity is stored; inherents would be 99% of the rows and
     // the block's own extrinsics_count already records them.
-    transactions: decoded.filter(isListedTransaction),
+    transactions: decodedListed,
+    contracts,
   };
 }
 
@@ -160,6 +209,76 @@ export async function persistBlocks(
          VALUES ${txRows.join(",")}
          ON CONFLICT (network, block_number, extrinsic_index) DO NOTHING`,
         txValues
+      );
+    }
+
+    // Raw contract event payloads. Undecodable today without the emitting
+    // contract's ABI, which is exactly why the bytes are kept.
+    const events = fetched.flatMap((entry) =>
+      entry.transactions.flatMap((tx) =>
+        tx.contractEmitted.map((emitted, eventIndex) => ({
+          blockNumber: tx.blockNumber,
+          extrinsicIndex: tx.extrinsicIndex,
+          eventIndex,
+          contract: emitted.contract,
+          data: Buffer.from(emitted.data.replace(/^0x/, ""), "hex"),
+        }))
+      )
+    );
+
+    if (events.length > 0) {
+      const values: unknown[] = [];
+      const rows = events.map((event, i) => {
+        const o = i * 6;
+        values.push(
+          network,
+          event.blockNumber,
+          event.extrinsicIndex,
+          event.eventIndex,
+          event.contract,
+          event.data
+        );
+        return `($${o + 1},$${o + 2},$${o + 3},$${o + 4},$${o + 5},$${o + 6})`;
+      });
+
+      await client.query(
+        `INSERT INTO tx_event (network, block_number, extrinsic_index,
+                               event_index, contract, data)
+         VALUES ${rows.join(",")}
+         ON CONFLICT (network, block_number, extrinsic_index, event_index)
+           DO NOTHING`,
+        values
+      );
+    }
+
+    // Contract registry. first_seen_block only ever moves backwards, so the
+    // backfill filling in older blocks corrects it rather than overwriting it.
+    const contractRows = new Map<string, { codeHash: string | null; block: number }>();
+    for (const entry of fetched) {
+      for (const [address, codeHash] of entry.contracts) {
+        const existing = contractRows.get(address);
+        if (!existing || entry.block.number < existing.block) {
+          contractRows.set(address, { codeHash, block: entry.block.number });
+        }
+      }
+    }
+
+    if (contractRows.size > 0) {
+      const values: unknown[] = [];
+      const rows = [...contractRows.entries()].map(([address, row], i) => {
+        const o = i * 4;
+        values.push(network, address, row.codeHash, row.block);
+        return `($${o + 1},$${o + 2},$${o + 3},$${o + 4})`;
+      });
+
+      await client.query(
+        `INSERT INTO contract (network, address, code_hash, first_seen_block)
+         VALUES ${rows.join(",")}
+         ON CONFLICT (network, address) DO UPDATE SET
+           code_hash        = COALESCE(EXCLUDED.code_hash, contract.code_hash),
+           first_seen_block = LEAST(contract.first_seen_block,
+                                    EXCLUDED.first_seen_block)`,
+        values
       );
     }
 

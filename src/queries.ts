@@ -119,15 +119,29 @@ export async function listTransactions(
   filters: { before?: number; address?: string; contract?: string }
 ) {
   const { rows } = await getPool().query(
-    `SELECT block_number, extrinsic_index, block_hash, extrinsic_hash, ts, kind,
-            section, method, signer, dest, contract, amount_raw, fee_raw,
-            success, error
-       FROM tx
-      WHERE network = $1
-        AND ($3::bigint IS NULL OR block_number < $3)
-        AND ($4::text IS NULL OR signer = $4 OR dest = $4)
-        AND ($5::text IS NULL OR contract = $5)
-      ORDER BY block_number DESC, extrinsic_index DESC
+    `SELECT t.block_number, t.extrinsic_index, t.block_hash, t.extrinsic_hash,
+            t.ts, t.kind, t.section, t.method, t.signer, t.dest, t.contract,
+            t.amount_raw, t.fee_raw, t.success, t.error,
+            c.code_hash,
+            COALESCE(
+              (SELECT json_agg(json_build_object(
+                        'eventIndex', e.event_index,
+                        'contract',   e.contract,
+                        'data',       '0x' || encode(e.data, 'hex'))
+                      ORDER BY e.event_index)
+                 FROM tx_event e
+                WHERE e.network = t.network
+                  AND e.block_number = t.block_number
+                  AND e.extrinsic_index = t.extrinsic_index),
+              '[]'::json) AS events
+       FROM tx t
+       LEFT JOIN contract c
+         ON c.network = t.network AND c.address = t.contract
+      WHERE t.network = $1
+        AND ($3::bigint IS NULL OR t.block_number < $3)
+        AND ($4::text IS NULL OR t.signer = $4 OR t.dest = $4)
+        AND ($5::text IS NULL OR t.contract = $5)
+      ORDER BY t.block_number DESC, t.extrinsic_index DESC
       LIMIT $2`,
     [
       network,
@@ -137,6 +151,7 @@ export async function listTransactions(
       filters.contract ?? null,
     ]
   );
+
   return rows.map((row) => ({
     id: `${row.block_number}-${row.extrinsic_index}`,
     blockNumber: Number(row.block_number),
@@ -151,9 +166,40 @@ export async function listTransactions(
     signer: row.signer,
     dest: row.dest,
     contract: row.contract,
+    /** Which ABI applies to `contract`, when the contract is known. */
+    codeHash: row.code_hash ?? null,
     amountRaw: row.amount_raw,
     feeRaw: row.fee_raw,
     success: row.success,
     error: row.error,
+    /**
+     * Raw ink! event payloads emitted by this extrinsic. Decoding needs the
+     * emitting contract's ABI — see the tx_event comment in schema.sql.
+     */
+    events: row.events as {
+      eventIndex: number;
+      contract: string;
+      data: string;
+    }[],
+  }));
+}
+
+/** Contracts seen on chain, optionally narrowed to one code hash. */
+export async function listContracts(
+  network: NetworkId,
+  filters: { codeHash?: string }
+) {
+  const { rows } = await getPool().query(
+    `SELECT address, code_hash, first_seen_block
+       FROM contract
+      WHERE network = $1
+        AND ($2::text IS NULL OR code_hash = $2)
+      ORDER BY first_seen_block DESC`,
+    [network, filters.codeHash ?? null]
+  );
+  return rows.map((row) => ({
+    address: row.address,
+    codeHash: row.code_hash ?? null,
+    firstSeenBlock: Number(row.first_seen_block),
   }));
 }

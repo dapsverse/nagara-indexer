@@ -11,6 +11,7 @@ import {
   dailyTransactions,
   indexerStatus,
   listBlocks,
+  listContracts,
   listTransactions,
 } from "./queries.js";
 
@@ -125,6 +126,17 @@ export function createServer(): http.Server {
                 : undefined,
               address: params.get("address") ?? undefined,
               contract: params.get("contract") ?? undefined,
+            }),
+          });
+          return;
+        }
+
+        case "/contracts": {
+          const network = readNetwork(params);
+          send(response, 200, {
+            network,
+            items: await listContracts(network, {
+              codeHash: params.get("codeHash") ?? undefined,
             }),
           });
           return;

@@ -64,3 +64,10 @@ export const TIP_BATCH = 50;
 export const BACKFILL_BATCH = 250;
 
 export const HTTP_PORT = Number(env("PORT") ?? 8787);
+
+/**
+ * How many times the tip follower retries a block the node refused before
+ * declaring it permanently gone. Blocks pruned during downtime never come back,
+ * and retrying one forever would freeze the tip.
+ */
+export const TIP_STALL_RETRIES = 3;

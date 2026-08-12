@@ -51,6 +51,56 @@ CREATE INDEX IF NOT EXISTS tx_network_dest_idx ON tx (network, dest)
 CREATE INDEX IF NOT EXISTS tx_network_contract_idx ON tx (network, contract)
   WHERE contract IS NOT NULL;
 
+-- Raw `contracts.ContractEmitted` payloads.
+--
+-- Stored undecoded on purpose. An ink! v4 event payload is
+-- `[local_event_index, ...SCALE fields]`, and that index is the emitting
+-- contract's own metadata ordering — there is no on-chain signature topic like
+-- Ethereum's topic0. So the payload cannot be interpreted without that
+-- contract's ABI, which may arrive later (or never). Keeping the bytes means a
+-- token standard or a verified ABI added tomorrow can decode history already
+-- indexed today, instead of it being lost.
+CREATE TABLE IF NOT EXISTS tx_event (
+  network         TEXT   NOT NULL,
+  block_number    BIGINT NOT NULL,
+  extrinsic_index INT    NOT NULL,
+  -- Position among the contract events of this extrinsic, not a global index.
+  event_index     INT    NOT NULL,
+  contract        TEXT   NOT NULL,
+  data            BYTEA  NOT NULL,
+  PRIMARY KEY (network, block_number, extrinsic_index, event_index)
+);
+
+-- "Everything this contract ever emitted", newest first.
+CREATE INDEX IF NOT EXISTS tx_event_contract_idx
+  ON tx_event (network, contract, block_number DESC);
+
+-- Contracts seen on chain, with the code hash that says which ABI applies.
+CREATE TABLE IF NOT EXISTS contract (
+  network          TEXT   NOT NULL,
+  address          TEXT   NOT NULL,
+  code_hash        TEXT,
+  first_seen_block BIGINT NOT NULL,
+  PRIMARY KEY (network, address)
+);
+
+CREATE INDEX IF NOT EXISTS contract_code_hash_idx
+  ON contract (network, code_hash);
+
+-- Block ranges that can never be indexed, recorded rather than left invisible.
+--
+-- If the indexer is offline longer than the node's pruning window, the blocks it
+-- missed are gone for good. Skipping them silently would make daily counts
+-- under-report with no trace, so each hole is written down here.
+CREATE TABLE IF NOT EXISTS indexer_gap (
+  network    TEXT        NOT NULL,
+  from_block BIGINT      NOT NULL,
+  to_block   BIGINT      NOT NULL,
+  reason     TEXT        NOT NULL,
+  noted_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (network, from_block)
+);
+
 -- Blocks are kept so the explorer can page through history without the chain.
 CREATE TABLE IF NOT EXISTS block (
   network          TEXT        NOT NULL,
