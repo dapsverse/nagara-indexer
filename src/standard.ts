@@ -47,8 +47,19 @@ export const NKRI08_SELECTORS: Record<string, string> = Object.fromEntries(
   ])
 );
 
+/**
+ * Mint and burn are **not** part of PSP22 and so not part of NKRI08 core, but
+ * MINAR exposes them and they are the bulk of real traffic on this chain — a mint
+ * is what moves circulating supply. Decoded as extensions, and marked as such.
+ */
+export const NKRI08_EXTENSIONS = ["mint_token", "burn_token"] as const;
+
+for (const name of NKRI08_EXTENSIONS) {
+  NKRI08_SELECTORS[name] = selectorOf(name);
+}
+
 export type StandardTransfer = {
-  message: "transfer" | "transfer_from";
+  message: "transfer" | "transfer_from" | "mint_token" | "burn_token";
   from: string | null;
   to: string;
   amountRaw: string;
@@ -105,6 +116,28 @@ export function decodeStandardTransfer(
       from: readAccount(0),
       to: readAccount(32),
       amountRaw: readU128(64),
+    };
+  }
+
+  // mint_token(to, amount, is_operator) / burn_token(from, amount, is_operator)
+  // — 32 + 16 + 1 bytes. The trailing bool is the operator flag and is not part
+  // of the movement itself.
+  if (selector === NKRI08_SELECTORS.mint_token && body.length === 49) {
+    return {
+      message: "mint_token",
+      from: null,
+      to: readAccount(0),
+      amountRaw: readU128(32),
+    };
+  }
+
+  if (selector === NKRI08_SELECTORS.burn_token && body.length === 49) {
+    return {
+      message: "burn_token",
+      from: readAccount(0),
+      // A burn has no recipient; the account it came from is the subject.
+      to: readAccount(0),
+      amountRaw: readU128(32),
     };
   }
 
