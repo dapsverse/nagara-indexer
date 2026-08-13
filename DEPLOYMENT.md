@@ -87,6 +87,21 @@ cd /opt/nagara-indexer
 sudo -u nagara npm ci --omit=dev=false
 ```
 
+**The shared decoder comes from git.** `package.json` pins
+`@nusameta/nagara-chain` to `github:dapsverse/nagara-chain-core#v0.1.1` — the
+package this service and the frontend share so their decoding can never diverge.
+That repository is public, so `npm ci` needs no deploy key, no token, and no sibling
+checkout.
+
+`package-lock.json` records the resolution as `git+ssh://git@github.com/...`. That
+is npm normalising a hosted-GitHub URL and it is **not** a problem: verified with
+`npm ci` under `GIT_SSH_COMMAND=/usr/bin/false` and an empty `--cache`, which
+installed over https. Do not "fix" the lockfile.
+
+To move to a newer decoder, bump the tag in `package.json`, `npm ci`, and restart.
+Bump it in the frontend at the same time — a version skew between the two is the
+exact failure the shared package exists to prevent.
+
 `npm ci` must install devDependencies: the service runs TypeScript directly
 through `tsx`, so `tsx` is required at runtime. Do **not** pass `--omit=dev`.
 
@@ -280,8 +295,11 @@ axis stays honest.
 
 ## Note on the shared decoder
 
-`src/decode.ts`, `src/format.ts` and `src/types.ts` are copies of the frontend's
-chain-decoding modules. They are what make an indexed row agree with what the
-explorer shows live. **They are duplicated across two repositories and can
-drift.** If you change how a transaction is classified in one, change it in the
-other, or promote these three files into a shared package.
+Extrinsic decoding, amount formatting and the NKRI08 token standard are **not** in
+this repository. They come from `@nusameta/nagara-chain`, imported by the frontend
+too. That is what makes an indexed row agree with what the explorer shows live.
+
+So a change to how a transaction is classified is a change to that package: commit
+it there, tag a release, and bump the tag in both hosts. Do not vendor a local copy
+back into `src/` — the two used to be duplicated files kept in sync by hand, which
+is what this arrangement replaced.

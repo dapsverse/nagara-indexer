@@ -1,7 +1,7 @@
 import type { ApiPromise } from "@polkadot/api";
 import { TypeRegistry } from "@polkadot/types";
 import { hexToU8a } from "@polkadot/util";
-import { NKRI08_SELECTORS } from "./standard.js";
+import { NKRI08_SELECTORS } from "@nusameta/nagara-chain";
 
 const registry = new TypeRegistry();
 
