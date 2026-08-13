@@ -32,11 +32,10 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Sync code and restart service
         run: |
-          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" APP_DIR="$APP_DIR" 'bash -s' <<'REMOTE'
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$DEPLOY_USER@$DEPLOY_HOST" APP_DIR="$APP_DIR" 'bash -s' <<'REMOTE'
           set -euo pipefail
           cd "$APP_DIR"
           sudo -u nagara git fetch origin main
@@ -48,7 +47,7 @@ jobs:
 
       - name: Verify service health
         run: |
-          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           sleep 10
           systemctl is-active nagara-indexer
