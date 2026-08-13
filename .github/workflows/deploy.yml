@@ -1,0 +1,57 @@
+name: Deploy
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Public repo: server coordinates live only in repository secrets, never in
+    # the tree. Secrets are masked in run logs automatically.
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      APP_DIR: /opt/nagara-indexer
+    steps:
+      - name: Check required secrets
+        run: |
+          missing=0
+          [ -n "${{ secrets.DEPLOY_SSH_KEY }}" ] || { echo "missing secret: DEPLOY_SSH_KEY"; missing=1; }
+          [ -n "$DEPLOY_HOST" ] || { echo "missing secret: DEPLOY_HOST"; missing=1; }
+          [ -n "$DEPLOY_USER" ] || { echo "missing secret: DEPLOY_USER"; missing=1; }
+          exit "$missing"
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Sync code and restart service
+        run: |
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" APP_DIR="$APP_DIR" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd "$APP_DIR"
+          sudo -u nagara git fetch origin main
+          sudo -u nagara git reset --hard origin/main
+          # devDependencies included on purpose: `npm start` runs through dotenv-cli + tsx.
+          sudo -u nagara npm ci
+          sudo systemctl restart nagara-indexer
+          REMOTE
+
+      - name: Verify service health
+        run: |
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          sleep 10
+          systemctl is-active nagara-indexer
+          curl -fsS -m 10 http://localhost:8787/ >/dev/null || { journalctl -u nagara-indexer -n 40 --no-pager; exit 1; }
+          echo "deploy OK: service active, API responding"
+          REMOTE
