@@ -52,6 +52,6 @@ jobs:
           set -euo pipefail
           sleep 10
           systemctl is-active nagara-indexer
-          curl -fsS -m 10 http://localhost:8787/ >/dev/null || { journalctl -u nagara-indexer -n 40 --no-pager; exit 1; }
+          curl -fsS -m 10 http://localhost:8787/health >/dev/null || { journalctl -u nagara-indexer -n 40 --no-pager; exit 1; }
           echo "deploy OK: service active, API responding"
           REMOTE
