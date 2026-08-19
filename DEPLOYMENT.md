@@ -125,7 +125,15 @@ PORT=8787
 MAINNET_WS_URL=wss://bootnode.nagara.network
 TESTNET_WS_URL=wss://testnet.nagara.network
 # Leave the two ARCHIVE urls blank until an archive node exists.
+
+# Required. Generate with: openssl rand -hex 32
+# Comma-separated, so a key can be rotated by running old and new side by side.
+API_KEYS=CHANGE_ME
 ```
+
+Leaving `API_KEYS` empty disables the key check entirely and every endpoint
+becomes world-readable. The process logs a warning at startup when that happens —
+treat it as a fault on any host reachable from the internet.
 
 `.env` holds the database password — keep it `600` and owned by `nagara`. It is
 gitignored; never commit it.
@@ -210,8 +218,25 @@ location /indexer/ {
 }
 ```
 
-The API is read-only and has no auth, so do not publish it openly unless you are
-content for anyone to run arbitrary range queries against it.
+The API requires `x-api-key` on every endpoint but `/health`, and the frontend
+attaches it server-side from its own `INDEXER_API_KEY`. Treat that as one layer,
+not the whole answer: it stops anyone who has the address from reading the data,
+but the source restriction above is what keeps them from reaching the port at all.
+Run both where you can.
+
+### Rolling the key out, and rotating it later
+
+Order matters. Set the key on the **frontend first**, then on the indexer:
+
+1. Set `INDEXER_API_KEY` in the frontend's environment and deploy it. The indexer
+   is still open, so it ignores the new header and the explorer keeps working.
+2. Set `API_KEYS` on the indexer and restart it. From here anything without the
+   key gets `401`.
+
+Doing it the other way round `401`s the running frontend until step 1 lands.
+
+To rotate: list both keys in `API_KEYS` (`old,new`), restart the indexer, move the
+frontend to the new key, then drop the old one and restart again.
 
 ---
 
@@ -282,14 +307,22 @@ All endpoints are `GET`, return JSON, and accept `?network=mainnet|testnet`
 
 | Endpoint        | Parameters                                     | Purpose                                        |
 | --------------- | ---------------------------------------------- | ---------------------------------------------- |
-| `/health`       | —                                              | Liveness only.                                 |
+| `/health`       | —                                              | Liveness only. The one endpoint needing no key.|
 | `/status`       | —                                              | Cursors and row counts for every network.      |
+| `/price`        | —                                              | NGRX price from the pegged cap and supply.     |
 | `/daily`        | `days` (1–365, default 14)                     | Transactions per calendar day, Asia/Jakarta.   |
 | `/blocks`       | `limit` (1–100), `before`                      | Newest blocks first; `before` pages downwards. |
 | `/transactions` | `limit`, `before`, `address`, `contract`        | Newest first; `address` matches either side.   |
 
+Every endpoint but `/health` answers `401 {"error":"unauthorized"}` without a
+matching `x-api-key` header.
+
 Days with no activity are returned as `0` rather than omitted, so a chart's x
 axis stays honest.
+
+`/price` reads total issuance from the live chain and divides the pegged market
+cap into it, so it needs a connected worker: while one is still connecting it
+answers `503` rather than quoting a stale number.
 
 ---
 

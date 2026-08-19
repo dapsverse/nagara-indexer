@@ -94,15 +94,26 @@ a `BIGINT`, and formatting is a display concern.
 
 All `GET`, all JSON, all accept `?network=mainnet|testnet` (default `mainnet`).
 
+Every endpoint except `/health` requires an `x-api-key` header matching one of
+the entries in `API_KEYS`; without a match the answer is `401`. Leaving
+`API_KEYS` empty disables the check, which is the local-development default.
+
 | Endpoint        | Parameters                               |
 | --------------- | ---------------------------------------- |
-| `/health`       | —                                        |
+| `/health`       | — (no key required)                      |
 | `/status`       | —                                        |
+| `/price`        | —                                        |
 | `/daily`        | `days` (1–365, default 14)               |
 | `/blocks`       | `limit` (1–100), `before`                |
 | `/transactions` | `limit`, `before`, `address`, `contract` |
 
 Paging is keyset: pass `before=<lowest blockNumber you have>` for the next page.
+
+`/price` divides NGRX's pegged market cap of Rp 500 billion by circulating supply,
+read live from the chain. Transactions burn part of the supply, so the price per
+token rises as supply falls. It is arithmetic on a policy figure, **not** a market
+quote. The peg lives in `MARKET_CAP_IDR` in `src/config.ts`; changing it reprices
+the token everywhere it is shown.
 
 `/daily` counts by calendar day in **Asia/Jakarta**, derived from the `tx` rows
 with a `GROUP BY` rather than kept as separate counters — one source of truth, so
