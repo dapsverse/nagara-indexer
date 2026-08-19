@@ -1,5 +1,8 @@
 import http from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import {
+  API_KEYS,
+  AUTH_ENABLED,
   DAILY_TIMEZONE,
   HTTP_PORT,
   MAX_DAILY_RANGE,
@@ -16,12 +19,38 @@ import {
   listTokens,
   listTransactions,
 } from "./queries.js";
+import { getPriceQuote } from "./price.js";
 
-/** Read-only public data, so any origin may read it. */
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-};
+/**
+ * Endpoints reachable without a key. Only the liveness probe: a load balancer
+ * has to be able to ask whether the process is up without holding a credential.
+ */
+const PUBLIC_PATHS = new Set(["/health"]);
+
+/**
+ * Constant-time key comparison, so a wrong key cannot be narrowed down by
+ * timing the response.
+ */
+function keyMatches(candidate: string, known: string): boolean {
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(known);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * Whether a request carries an accepted key.
+ *
+ * The only consumer is the explorer's server-side proxy, which holds the key in
+ * its own environment — the key never reaches a browser, and no CORS headers are
+ * sent because nothing is meant to call this from one.
+ */
+function isAuthorised(request: http.IncomingMessage): boolean {
+  if (!AUTH_ENABLED) return true;
+  const header = request.headers["x-api-key"];
+  const presented = Array.isArray(header) ? header[0] : header;
+  if (!presented) return false;
+  return API_KEYS.some((known) => keyMatches(presented, known));
+}
 
 function send(
   response: http.ServerResponse,
@@ -31,8 +60,9 @@ function send(
   const payload = JSON.stringify(body);
   response.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "public, max-age=5",
-    ...CORS,
+    // Answers are proxied by a server that caches on its own terms, and the key
+    // that unlocked them must not pin a copy in any shared cache.
+    "Cache-Control": "no-store",
   });
   response.end(payload);
 }
@@ -61,14 +91,13 @@ function readInt(
  */
 export function createServer(): http.Server {
   return http.createServer(async (request, response) => {
-    if (request.method === "OPTIONS") {
-      response.writeHead(204, CORS);
-      response.end();
-      return;
-    }
-
     const url = new URL(request.url ?? "/", "http://localhost");
     const params = url.searchParams;
+
+    if (!PUBLIC_PATHS.has(url.pathname) && !isAuthorised(request)) {
+      send(response, 401, { error: "unauthorized" });
+      return;
+    }
 
     try {
       switch (url.pathname) {
@@ -149,6 +178,20 @@ export function createServer(): http.Server {
           return;
         }
 
+        case "/price": {
+          const network = readNetwork(params);
+          try {
+            send(response, 200, await getPriceQuote(network));
+          } catch (error) {
+            // No connection, or an issuance of zero. Either way there is no
+            // honest number to return, and a stale one would be quoted as real.
+            send(response, 503, {
+              error: `price unavailable: ${(error as Error).message}`,
+            });
+          }
+          return;
+        }
+
         case "/tokens": {
           const network = readNetwork(params);
           send(response, 200, { network, items: await listTokens(network) });
@@ -180,6 +223,11 @@ export function startServer(): http.Server {
   const server = createServer();
   server.listen(HTTP_PORT, () => {
     console.log(`[http] listening on :${HTTP_PORT}`);
+    if (!AUTH_ENABLED) {
+      console.warn(
+        "[http] API_KEYS is empty — every endpoint is open. Set it before exposing this port."
+      );
+    }
   });
   return server;
 }

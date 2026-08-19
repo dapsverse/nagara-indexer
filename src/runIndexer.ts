@@ -1,4 +1,5 @@
 import { ApiPromise, WsProvider } from "@polkadot/api";
+import { registerApi } from "./chainApi.js";
 import { cryptoWaitReady } from "@polkadot/util-crypto";
 import {
   BACKFILL_BATCH,
@@ -291,6 +292,9 @@ async function backfill(network: NetworkId): Promise<void> {
 export async function runNetworkIndexer(network: NetworkId): Promise<void> {
   const config = NETWORKS[network];
   const api = await connect(config.wsUrl);
+
+  // The read API answers /price off this same connection.
+  registerApi(network, api);
 
   const chain = (await api.rpc.system.chain()).toString();
   const head = (await api.rpc.chain.getHeader()).number.toNumber();
