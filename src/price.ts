@@ -44,7 +44,7 @@ export function priceIdrFromIssuance(
  * burned raises what the rest are worth. Nothing here is a market quote.
  */
 async function readQuote(network: NetworkId): Promise<PriceQuote> {
-  const api = getApi(network);
+  const api = await getApi(network);
   if (!api) throw new Error(`no chain connection for ${network}`);
 
   const issuance = await api.query.balances.totalIssuance();
