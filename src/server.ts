@@ -76,8 +76,11 @@ function send(
   response.end(payload);
 }
 
-function readNetwork(params: URLSearchParams): NetworkId {
-  const requested = params.get("network");
+export function readNetwork(params: URLSearchParams): NetworkId {
+  // Lowercased before the lookup so "Testnet"/"TESTNET" match the same entry
+  // as "testnet" instead of silently falling back to mainnet — a typo in
+  // casing must not answer with the wrong network's data.
+  const requested = params.get("network")?.toLowerCase();
   return requested && requested in NETWORKS
     ? (requested as NetworkId)
     : "mainnet";
