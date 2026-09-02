@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { Pool } from "pg";
+import type { PoolClient } from "pg";
 
 let pool: Pool | null = null;
 let schemaReady: Promise<void> | null = null;
@@ -41,4 +42,23 @@ export function ensureSchema(): Promise<void> {
     });
   }
   return schemaReady;
+}
+
+/**
+ * Runs `fn` inside BEGIN/COMMIT, rolling back on any thrown error. The
+ * connection is always released back to the pool, success or failure.
+ */
+export async function tx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
