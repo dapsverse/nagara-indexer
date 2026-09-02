@@ -1,8 +1,22 @@
 export type NetworkId = "mainnet" | "testnet";
 
-export type NetworkConfig = {
+/**
+ * Which protocol a network speaks. `mainnet` is still the old ink!/
+ * pallet-contracts chain; `testnet` migrated to a sovereign Substrate chain
+ * with pallet-ethereum/pallet-evm (Frontier) bolted on. `mainnet` will make
+ * the same jump later, as a brand-new genesis chain, not an in-place upgrade.
+ *
+ * Every branch point in this codebase (which ingestion pipeline runs, which
+ * tables `/activity` reads) switches on this field, never on the network's
+ * name — so migrating mainnet is flipping this value plus its connection
+ * fields, not a code change.
+ */
+export type ChainType = "substrate" | "evm";
+
+export type SubstrateNetworkConfig = {
   id: NetworkId;
   label: string;
+  chainType: "substrate";
   /** Live node — always reachable, but prunes old blocks. */
   wsUrl: string;
   /**
@@ -14,6 +28,17 @@ export type NetworkConfig = {
   archiveWsUrl?: string;
 };
 
+export type EvmNetworkConfig = {
+  id: NetworkId;
+  label: string;
+  chainType: "evm";
+  /** JSON-RPC HTTP endpoint — Frontier's Ethereum-compatible RPC. */
+  rpcHttpUrl: string;
+  chainId: number;
+};
+
+export type NetworkConfig = SubstrateNetworkConfig | EvmNetworkConfig;
+
 const env = (name: string): string | undefined =>
   process.env[name]?.trim() || undefined;
 
@@ -21,25 +46,31 @@ export const NETWORKS: Record<NetworkId, NetworkConfig> = {
   mainnet: {
     id: "mainnet",
     label: "Mainnet",
+    chainType: "substrate",
     wsUrl: env("MAINNET_WS_URL") ?? "wss://bootnode.nagara.network",
     archiveWsUrl: env("MAINNET_ARCHIVE_WS_URL"),
   },
   testnet: {
     id: "testnet",
     label: "Testnet",
-    wsUrl: env("TESTNET_WS_URL") ?? "wss://testnet.nagara.network",
-    archiveWsUrl: env("TESTNET_ARCHIVE_WS_URL"),
+    chainType: "evm",
+    rpcHttpUrl: env("TESTNET_RPC_HTTP_URL") ?? "https://testnet.nagara.network",
+    chainId: Number(env("TESTNET_CHAIN_ID") ?? "16869"),
   },
 };
 
 /** Which endpoint history should be read from: archive if configured. */
 export function backfillWsUrl(network: NetworkId): string {
   const config = NETWORKS[network];
+  if (config.chainType !== "substrate") {
+    throw new Error(`${network} is not a substrate network`);
+  }
   return config.archiveWsUrl ?? config.wsUrl;
 }
 
 export function hasArchive(network: NetworkId): boolean {
-  return Boolean(NETWORKS[network].archiveWsUrl);
+  const config = NETWORKS[network];
+  return config.chainType === "substrate" && Boolean(config.archiveWsUrl);
 }
 
 /**
