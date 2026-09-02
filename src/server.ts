@@ -20,6 +20,7 @@ import {
   listTokens,
   listTransactions,
 } from "./queries.js";
+import { listEvmActivity } from "./evm/queries.js";
 import { getPriceQuote } from "./price.js";
 
 /**
@@ -195,6 +196,36 @@ export function createServer(): http.Server {
             return;
           }
           const rawCursor = params.get("cursor");
+          const isEvm = NETWORKS[network].chainType === "evm";
+
+          if (isEvm) {
+            let cursor: import("./evm/queries.js").EvmActivityCursor | undefined;
+            if (rawCursor) {
+              const parts = rawCursor.split(":");
+              const pattern = /^\d+:\d+:[01]:-?\d+:-?\d+$/;
+              if (
+                !pattern.test(rawCursor) ||
+                !parts.slice(0, 2).every((p) => Number.isSafeInteger(Number(p)))
+              ) {
+                send(response, 400, { error: "invalid cursor" });
+                return;
+              }
+              const [blockNumber, txIndex, kind, logIndex, subIndex] = parts.map(Number);
+              cursor = { blockNumber, txIndex, kind: kind as 0 | 1, logIndex, subIndex };
+            }
+            const items = await listEvmActivity(network, limit, { address, cursor });
+            const last = items[items.length - 1];
+            send(response, 200, {
+              network,
+              items: items.map(({ txIndex, kind, logIndex, subIndex, ...item }) => item),
+              nextCursor:
+                items.length < limit || !last
+                  ? null
+                  : `${last.blockNumber}:${last.txIndex}:${last.kind}:${last.logIndex}:${last.subIndex}`,
+            });
+            return;
+          }
+
           let cursor:
             | { blockNumber: number; extrinsicIndex: number; kind: 0 | 1 }
             | undefined;
