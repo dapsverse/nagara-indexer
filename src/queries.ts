@@ -291,6 +291,92 @@ export async function listTokenTransfers(
   }));
 }
 
+export type ActivityRow = {
+  hash: string;
+  blockNumber: string;
+  extrinsicIndex: number;
+  kind: 0 | 1;
+  timestamp: string;
+  from: string | null;
+  to: string | null;
+  token: string;
+  amountRaw: string;
+  status: "success" | "failed";
+  feeRaw: string;
+};
+
+/**
+ * Native transfers and token transfers touching one address, merged into a
+ * single time-sorted feed for the wallet activity view.
+ *
+ * All amounts stay as the strings pg returns — `Number()` loses precision
+ * above 2^53, and 1 MINAR is 10^18 raw units, so every wallet-facing amount
+ * here (amountRaw, feeRaw, blockNumber) must round-trip as a string.
+ *
+ * `kind` (0=native, 1=token) is a tiebreaker, not a display field: one
+ * extrinsic can be both a native transfer AND trigger a token_transfer, so it
+ * can appear as two rows sharing the same (block_number, extrinsic_index).
+ * Without `kind` in the sort/cursor, a page boundary landing between those two
+ * rows would drop the second one forever. Decimals is deliberately omitted —
+ * the wallet already reads it straight from the token contract.
+ */
+export async function listActivity(
+  network: NetworkId,
+  limit: number,
+  filters: {
+    address: string;
+    cursor?: { blockNumber: number; extrinsicIndex: number; kind: 0 | 1 };
+  }
+): Promise<ActivityRow[]> {
+  const cursorBlock = filters.cursor?.blockNumber ?? null;
+  const cursorIndex = filters.cursor?.extrinsicIndex ?? null;
+  const cursorKind = filters.cursor?.kind ?? null;
+  const { rows } = await getPool().query(
+    `SELECT * FROM (
+       SELECT t.extrinsic_hash AS hash, t.block_number, t.extrinsic_index,
+              0::int AS kind, t.ts, t.fee_raw, t.success,
+              'native'::text AS token, t.signer AS from_address,
+              t.dest AS to_address, t.amount_raw
+         FROM tx t
+        WHERE t.network = $1
+          AND t.amount_raw IS NOT NULL
+          AND (t.signer = $2 OR t.dest = $2)
+          AND ($4::bigint IS NULL
+               OR (t.block_number, t.extrinsic_index, 0) < ($4::bigint, $5::int, $6::int))
+       UNION ALL
+       SELECT t.extrinsic_hash AS hash, t.block_number, t.extrinsic_index,
+              1::int AS kind, t.ts, t.fee_raw, t.success,
+              tt.token AS token, COALESCE(tt.from_address, t.signer) AS from_address,
+              tt.to_address AS to_address, tt.amount_raw
+         FROM tx t
+         JOIN token_transfer tt
+           ON tt.network = t.network
+          AND tt.block_number = t.block_number
+          AND tt.extrinsic_index = t.extrinsic_index
+        WHERE t.network = $1
+          AND (tt.from_address = $2 OR tt.to_address = $2)
+          AND ($4::bigint IS NULL
+               OR (t.block_number, t.extrinsic_index, 1) < ($4::bigint, $5::int, $6::int))
+     ) activity
+     ORDER BY block_number DESC, extrinsic_index DESC, kind DESC
+     LIMIT $3`,
+    [network, filters.address, limit, cursorBlock, cursorIndex, cursorKind]
+  );
+  return rows.map((row) => ({
+    hash: row.hash,
+    blockNumber: row.block_number,
+    extrinsicIndex: Number(row.extrinsic_index),
+    kind: row.kind,
+    timestamp: row.ts.toISOString(),
+    from: row.from_address,
+    to: row.to_address,
+    token: row.token,
+    amountRaw: row.amount_raw,
+    status: row.success ? "success" : "failed",
+    feeRaw: row.fee_raw,
+  }));
+}
+
 /** Contracts that answered the NKRI08 read interface. */
 export async function listTokens(network: NetworkId) {
   const { rows } = await getPool().query(
