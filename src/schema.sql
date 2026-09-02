@@ -161,3 +161,101 @@ CREATE INDEX IF NOT EXISTS token_transfer_from_idx
   ON token_transfer (network, from_address) WHERE from_address IS NOT NULL;
 CREATE INDEX IF NOT EXISTS token_transfer_to_idx
   ON token_transfer (network, to_address);
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- EVM chain support (pallet-ethereum / pallet-evm networks).
+--
+-- Ported from nagara-evm-explorer's schema, which indexed one network per
+-- deployment. This indexer is multi-network in one database, so every table
+-- here carries a `network` column that the source schema did not need.
+--
+-- All uint256 values are NUMERIC(78,0): BIGINT overflows at 2^63 and wei
+-- values routinely exceed it. Addresses and hashes are stored lowercase.
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS evm_block (
+  network      TEXT NOT NULL,
+  number       BIGINT NOT NULL,
+  hash         TEXT NOT NULL,
+  parent_hash  TEXT NOT NULL,
+  timestamp    TIMESTAMPTZ NOT NULL,
+  author       TEXT,
+  gas_used     NUMERIC(78,0) NOT NULL,
+  gas_limit    NUMERIC(78,0) NOT NULL,
+  base_fee     NUMERIC(78,0),
+  tx_count     INTEGER NOT NULL,
+  PRIMARY KEY (network, number)
+);
+
+CREATE TABLE IF NOT EXISTS evm_tx (
+  network              TEXT NOT NULL,
+  hash                 TEXT NOT NULL,
+  block_number         BIGINT NOT NULL,
+  tx_index             INTEGER NOT NULL,
+  from_addr            TEXT NOT NULL,
+  to_addr              TEXT,
+  value                NUMERIC(78,0) NOT NULL,
+  gas_used             NUMERIC(78,0) NOT NULL,
+  gas_price            NUMERIC(78,0),
+  effective_gas_price  NUMERIC(78,0),
+  status               SMALLINT NOT NULL,
+  nonce                BIGINT NOT NULL,
+  input                BYTEA NOT NULL,
+  contract_address     TEXT,
+  PRIMARY KEY (network, hash)
+);
+CREATE INDEX IF NOT EXISTS evm_tx_from_idx  ON evm_tx (network, from_addr, block_number DESC);
+CREATE INDEX IF NOT EXISTS evm_tx_to_idx    ON evm_tx (network, to_addr, block_number DESC);
+CREATE INDEX IF NOT EXISTS evm_tx_block_idx ON evm_tx (network, block_number DESC, tx_index);
+
+CREATE TABLE IF NOT EXISTS evm_log (
+  network      TEXT NOT NULL,
+  tx_hash      TEXT NOT NULL,
+  log_index    INTEGER NOT NULL,
+  block_number BIGINT NOT NULL,
+  address      TEXT NOT NULL,
+  topic0       TEXT,
+  topic1       TEXT,
+  topic2       TEXT,
+  topic3       TEXT,
+  data         BYTEA NOT NULL,
+  PRIMARY KEY (network, tx_hash, log_index)
+);
+CREATE INDEX IF NOT EXISTS evm_log_topic0_idx ON evm_log (network, topic0, block_number DESC);
+
+CREATE TABLE IF NOT EXISTS evm_token (
+  network    TEXT NOT NULL,
+  address    TEXT NOT NULL,
+  type       TEXT NOT NULL,       -- 'erc20' | 'erc721' | 'erc1155'
+  name       TEXT,
+  symbol     TEXT,
+  decimals   SMALLINT,            -- NULL for 721/1155
+  first_seen BIGINT NOT NULL,     -- block_number
+  PRIMARY KEY (network, address)
+);
+
+CREATE TABLE IF NOT EXISTS evm_token_transfer (
+  network      TEXT NOT NULL,
+  tx_hash      TEXT NOT NULL,
+  log_index    INTEGER NOT NULL,
+  -- One ERC-1155 TransferBatch log carries many transfers. They share a
+  -- log_index, so sub_index separates them; everything else is 0.
+  sub_index    INTEGER NOT NULL DEFAULT 0,
+  block_number BIGINT NOT NULL,
+  token        TEXT NOT NULL,
+  from_addr    TEXT NOT NULL,
+  to_addr      TEXT NOT NULL,
+  value        NUMERIC(78,0),     -- NULL for ERC-721
+  token_id     NUMERIC(78,0),     -- NULL for ERC-20
+  PRIMARY KEY (network, tx_hash, log_index, sub_index),
+  FOREIGN KEY (network, tx_hash, log_index)
+    REFERENCES evm_log (network, tx_hash, log_index) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS evm_tt_token_idx ON evm_token_transfer (network, token, block_number DESC);
+CREATE INDEX IF NOT EXISTS evm_tt_from_idx  ON evm_token_transfer (network, from_addr, block_number DESC);
+CREATE INDEX IF NOT EXISTS evm_tt_to_idx    ON evm_token_transfer (network, to_addr, block_number DESC);
+
+CREATE TABLE IF NOT EXISTS evm_cursor (
+  network            TEXT PRIMARY KEY,
+  last_indexed_block BIGINT NOT NULL
+);

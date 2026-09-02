@@ -7,14 +7,15 @@
   "scripts": {
     "dev": "NODE_OPTIONS='--preserve-symlinks' dotenv -e .env -- tsx watch src/index.ts",
     "start": "NODE_OPTIONS='--preserve-symlinks' dotenv -e .env -- tsx src/index.ts",
+    "test": "node --env-file-if-exists=.env --import tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@nusameta/nagara-chain": "github:dapsverse/nagara-chain-core#v0.1.1",
     "@polkadot/api": "16.4.9",
     "@polkadot/util": "^13.5.7",
     "@polkadot/util-crypto": "^13.5.7",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "viem": "^2.21.0"
   },
   "devDependencies": {
     "@types/node": "^20",

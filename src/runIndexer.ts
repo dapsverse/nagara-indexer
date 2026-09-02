@@ -13,6 +13,7 @@ import {
 } from "./config.js";
 import { ensureSchema, getPool } from "./db.js";
 import { fetchRange, persistBlocks } from "./writeBlocks.js";
+import { runEvmNetworkIndexer } from "./evm/runEvmIndexer.js";
 
 type Cursors = { lastBlock: number | null; backfillBlock: number | null };
 
@@ -288,9 +289,12 @@ async function backfill(network: NetworkId): Promise<void> {
   }
 }
 
-/** Indexes one network: tip forwards on the live node, history backwards. */
-export async function runNetworkIndexer(network: NetworkId): Promise<void> {
+/** Indexes one substrate network: tip forwards on the live node, history backwards. */
+async function runSubstrateNetworkIndexer(network: NetworkId): Promise<void> {
   const config = NETWORKS[network];
+  if (config.chainType !== "substrate") {
+    throw new Error(`${network} is not a substrate network`);
+  }
   const api = await connect(config.wsUrl);
 
   // The read API answers /price off this same connection.
@@ -319,10 +323,14 @@ export async function runIndexer(): Promise<void> {
 
   const networks = Object.keys(NETWORKS) as NetworkId[];
   await Promise.all(
-    networks.map((network) =>
-      runNetworkIndexer(network).catch((error: unknown) => {
+    networks.map((network) => {
+      const worker =
+        NETWORKS[network].chainType === "evm"
+          ? runEvmNetworkIndexer(network)
+          : runSubstrateNetworkIndexer(network);
+      return worker.catch((error: unknown) => {
         log(network, `worker stopped: ${(error as Error).message}`);
-      })
-    )
+      });
+    })
   );
 }

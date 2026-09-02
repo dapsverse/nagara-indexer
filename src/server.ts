@@ -13,12 +13,14 @@ import {
 import {
   dailyTransactions,
   indexerStatus,
+  listActivity,
   listBlocks,
   listContracts,
   listTokenTransfers,
   listTokens,
   listTransactions,
 } from "./queries.js";
+import { listEvmActivity } from "./evm/queries.js";
 import { getPriceQuote } from "./price.js";
 
 /**
@@ -26,6 +28,13 @@ import { getPriceQuote } from "./price.js";
  * has to be able to ask whether the process is up without holding a credential.
  */
 const PUBLIC_PATHS = new Set(["/health"]);
+
+/**
+ * Opaque `/activity` pagination cursor: "<blockNumber>:<extrinsicIndex>:<kind>".
+ * `kind` (0|1) breaks ties between a native row and a token row that share the
+ * same block/extrinsic — see the comment on `listActivity`.
+ */
+const CURSOR_PATTERN = /^\d+:\d+:[01]$/;
 
 /**
  * Constant-time key comparison, so a wrong key cannot be narrowed down by
@@ -174,6 +183,81 @@ export function createServer(): http.Server {
               token: params.get("token") ?? undefined,
               address: params.get("address") ?? undefined,
             }),
+          });
+          return;
+        }
+
+        case "/activity": {
+          const network = readNetwork(params);
+          const limit = readInt(params, "limit", 25, MAX_PAGE_SIZE);
+          const address = params.get("address");
+          if (!address) {
+            send(response, 400, { error: "address is required" });
+            return;
+          }
+          const rawCursor = params.get("cursor");
+          const isEvm = NETWORKS[network].chainType === "evm";
+
+          if (isEvm) {
+            let cursor: import("./evm/queries.js").EvmActivityCursor | undefined;
+            if (rawCursor) {
+              const parts = rawCursor.split(":");
+              const pattern = /^\d+:\d+:[01]:-?\d+:-?\d+$/;
+              if (
+                !pattern.test(rawCursor) ||
+                !parts.slice(0, 2).every((p) => Number.isSafeInteger(Number(p)))
+              ) {
+                send(response, 400, { error: "invalid cursor" });
+                return;
+              }
+              const [blockNumber, txIndex, kind, logIndex, subIndex] = parts.map(Number);
+              cursor = { blockNumber, txIndex, kind: kind as 0 | 1, logIndex, subIndex };
+            }
+            const items = await listEvmActivity(network, limit, { address, cursor });
+            const last = items[items.length - 1];
+            send(response, 200, {
+              network,
+              items: items.map(({ txIndex, kind, logIndex, subIndex, ...item }) => item),
+              nextCursor:
+                items.length < limit || !last
+                  ? null
+                  : `${last.blockNumber}:${last.txIndex}:${last.kind}:${last.logIndex}:${last.subIndex}`,
+            });
+            return;
+          }
+
+          let cursor:
+            | { blockNumber: number; extrinsicIndex: number; kind: 0 | 1 }
+            | undefined;
+          if (rawCursor) {
+            if (
+              !CURSOR_PATTERN.test(rawCursor) ||
+              // Regex only bounds the shape; a huge digit string still parses
+              // (as Infinity or a lossy float) and blows up `::bigint` in
+              // Postgres as an unhandled 500. Reject anything outside the
+              // range a real block number could ever reach.
+              !rawCursor
+                .split(":")
+                .slice(0, 2)
+                .every((part) => Number.isSafeInteger(Number(part)))
+            ) {
+              send(response, 400, { error: "invalid cursor" });
+              return;
+            }
+            const [blockNumber, extrinsicIndex, kind] = rawCursor
+              .split(":")
+              .map(Number);
+            cursor = { blockNumber, extrinsicIndex, kind: kind as 0 | 1 };
+          }
+          const items = await listActivity(network, limit, { address, cursor });
+          const last = items[items.length - 1];
+          send(response, 200, {
+            network,
+            items: items.map(({ extrinsicIndex, kind, ...item }) => item),
+            nextCursor:
+              items.length < limit || !last
+                ? null
+                : `${last.blockNumber}:${last.extrinsicIndex}:${last.kind}`,
           });
           return;
         }
