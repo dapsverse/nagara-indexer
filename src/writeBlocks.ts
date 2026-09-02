@@ -5,11 +5,11 @@ import {
   isListedTransaction,
   readBlockTimestamp,
   readWeight,
-} from "@nusameta/nagara-chain";
-import type { ChainExtrinsic } from "@nusameta/nagara-chain";
+} from "./decode.js";
+import type { ChainExtrinsic } from "./types.js";
 import { getPool } from "./db.js";
 import { SS58_FORMAT } from "./config.js";
-import { decodeStandardTransfer } from "@nusameta/nagara-chain";
+import { decodeStandardTransfer } from "./standard.js";
 import { detectToken, type TokenInfo } from "./detectToken.js";
 
 type WeightLike = { refTime: { toBigInt: () => bigint } };
