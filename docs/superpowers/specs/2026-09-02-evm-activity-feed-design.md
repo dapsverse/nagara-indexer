@@ -1,7 +1,7 @@
 # EVM support for `nagara-indexer`: serving `/activity` to the wallet
 
 Date: 2026-09-02
-Status: approved by Irsan, ready for implementation planning
+Status: implemented & merged 2026-09-02. nagara-evm-explorer deleted same day (no remote, working tree was clean).
 
 ## Context
 
