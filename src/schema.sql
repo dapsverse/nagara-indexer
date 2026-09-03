@@ -255,7 +255,16 @@ CREATE INDEX IF NOT EXISTS evm_tt_token_idx ON evm_token_transfer (network, toke
 CREATE INDEX IF NOT EXISTS evm_tt_from_idx  ON evm_token_transfer (network, from_addr, block_number DESC);
 CREATE INDEX IF NOT EXISTS evm_tt_to_idx    ON evm_token_transfer (network, to_addr, block_number DESC);
 
+-- Two independent cursors, same reasoning as `indexer_state` on the substrate
+-- path: `last_indexed_block` is the tip the forward loop resumes above,
+-- `backfill_block` is where the backward loop resumes below. Both are seeded
+-- at the chain head on first run, so recent activity is visible within
+-- seconds while history fills in behind it — a single sequential walk from 0
+-- would hide brand-new transactions behind however much history is left.
 CREATE TABLE IF NOT EXISTS evm_cursor (
   network            TEXT PRIMARY KEY,
-  last_indexed_block BIGINT NOT NULL
+  last_indexed_block BIGINT NOT NULL,
+  backfill_block     BIGINT
 );
+
+ALTER TABLE evm_cursor ADD COLUMN IF NOT EXISTS backfill_block BIGINT;
