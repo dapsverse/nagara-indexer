@@ -20,7 +20,7 @@ import {
   listTokens,
   listTransactions,
 } from "./queries.js";
-import { listEvmActivity } from "./evm/queries.js";
+import { listEvmActivity, listEvmBlocks } from "./evm/queries.js";
 import { getPriceQuote } from "./price.js";
 
 /**
@@ -147,13 +147,13 @@ export function createServer(): http.Server {
           const network = readNetwork(params);
           const limit = readInt(params, "limit", 25, MAX_PAGE_SIZE);
           const before = params.get("before");
+          const beforeNumber = before ? Number(before) : undefined;
           send(response, 200, {
             network,
-            items: await listBlocks(
-              network,
-              limit,
-              before ? Number(before) : undefined
-            ),
+            items:
+              NETWORKS[network].chainType === "evm"
+                ? await listEvmBlocks(network, limit, beforeNumber)
+                : await listBlocks(network, limit, beforeNumber),
           });
           return;
         }

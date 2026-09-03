@@ -1,6 +1,52 @@
 import type { NetworkId } from "../config.js";
 import { getPool } from "../db.js";
 
+export type EvmBlockRow = {
+  blockNumber: string;
+  hash: string;
+  parentHash: string;
+  timestamp: string;
+  author: string | null;
+  gasUsed: string;
+  gasLimit: string;
+  baseFee: string | null;
+  txCount: number;
+};
+
+/**
+ * Newest blocks first, keyset-paginated by block number — the EVM-chain
+ * equivalent of `listBlocks()`. Field names follow the chain's own shape
+ * (gas, not weight; no state/extrinsics roots) rather than forcing the
+ * substrate response's fields onto data that doesn't have them.
+ */
+export async function listEvmBlocks(
+  network: NetworkId,
+  limit: number,
+  before?: number,
+): Promise<EvmBlockRow[]> {
+  const { rows } = await getPool().query(
+    `SELECT number, hash, parent_hash, timestamp, author, gas_used, gas_limit,
+            base_fee, tx_count
+       FROM evm_block
+      WHERE network = $1
+        AND ($3::bigint IS NULL OR number < $3)
+      ORDER BY number DESC
+      LIMIT $2`,
+    [network, limit, before ?? null],
+  );
+  return rows.map((row) => ({
+    blockNumber: row.number,
+    hash: row.hash,
+    parentHash: row.parent_hash,
+    timestamp: row.timestamp.toISOString(),
+    author: row.author,
+    gasUsed: row.gas_used,
+    gasLimit: row.gas_limit,
+    baseFee: row.base_fee,
+    txCount: Number(row.tx_count),
+  }));
+}
+
 export type EvmActivityCursor = {
   blockNumber: number;
   txIndex: number;
