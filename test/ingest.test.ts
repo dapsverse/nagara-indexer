@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { Pool } from "pg";
+import { getPool } from "../src/db.js";
 
 /**
  * Ingestion is tested against a disposable anvil, not against the Nagara
@@ -27,12 +27,10 @@ const creationBytecode = readFileSync(
 const schemaSql = readFileSync(new URL("../src/schema.sql", import.meta.url), "utf8");
 
 let anvil: ChildProcess | undefined;
-let pool: Pool;
+let pool: ReturnType<typeof getPool>;
 let createEvmClient: typeof import("../src/evm/rpc.js")["createEvmClient"];
 let ingestBlock: typeof import("../src/evm/ingest.js")["ingestBlock"];
 let client: ReturnType<typeof import("../src/evm/rpc.js")["createEvmClient"]>;
-let db = "";
-let usr = "";
 let tokenAddress = "";
 
 function freePort(): Promise<number> {
@@ -115,19 +113,22 @@ before(async () => {
     args: [RECIPIENT as `0x${string}`, parseEther("1")],
   });
 
-  pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  const { rows } = await pool.query<{ db: string; usr: string }>(
-    "SELECT current_database() AS db, current_user AS usr",
-  );
-  db = rows[0].db;
-  usr = rows[0].usr;
+  // getPool() is the SAME pool ingestBlock()/tx() use internally — reusing it
+  // (rather than a second, separate `new Pool()`) means there is exactly one
+  // pool to keep pointed at the throwaway schema, not two.
+  //
   // A pool hands out whichever connection is idle and opens new ones when it
-  // needs to, so `SET search_path` on one connection is not enough: an ingest
-  // could land on a fresh connection and write into the real tables. Setting it
-  // at the role level covers every connection this test will ever get. Both
-  // identifiers come from the server itself, so quoting them is sufficient.
-  await pool.query(`ALTER ROLE "${usr}" IN DATABASE "${db}" SET search_path TO test_ingest`);
-  await pool.query("SET search_path TO test_ingest");
+  // needs to, so `SET search_path` on one connection is not enough — but
+  // setting it at the ROLE level (the previous approach here) is worse: that
+  // default is global to every session anyone opens as this role, including
+  // every OTHER test file's pool running concurrently in the same `npm test`
+  // invocation, and they raced to overwrite each other's default. Attaching
+  // `search_path` to this pool's own `'connect'` event instead scopes it to
+  // connections THIS pool opens, with no cross-process interference.
+  pool = getPool();
+  pool.on("connect", (client) => {
+    client.query("SET search_path TO test_ingest").catch(() => {});
+  });
   await pool.query("DROP SCHEMA IF EXISTS test_ingest CASCADE");
   await pool.query("CREATE SCHEMA test_ingest");
   await pool.query(schemaSql);
@@ -135,7 +136,6 @@ before(async () => {
 
 after(async () => {
   try {
-    if (usr) await pool?.query(`ALTER ROLE "${usr}" IN DATABASE "${db}" RESET search_path`);
     await pool?.query("DROP SCHEMA IF EXISTS test_ingest CASCADE");
   } finally {
     await pool?.end();
