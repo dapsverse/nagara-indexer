@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { Pool } from "pg";
+import { getPool } from "../src/db.js";
 
 const NETWORK = "test_evm_activity";
 const ADDR = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -10,10 +10,9 @@ const TOKEN = "0xcccccccccccccccccccccccccccccccccccccccc".slice(0, 42);
 
 const schemaSql = readFileSync(new URL("../src/schema.sql", import.meta.url), "utf8");
 
-let pool: Pool;
+let pool: ReturnType<typeof getPool>;
 let listEvmActivity: typeof import("../src/evm/queries.js")["listEvmActivity"];
-let db = "";
-let usr = "";
+let listEvmBlocks: typeof import("../src/evm/queries.js")["listEvmBlocks"];
 
 async function insertBlock(number: number, tsSeconds: number) {
   await pool.query(
@@ -91,19 +90,20 @@ async function insertTokenTransfer(opts: {
 }
 
 before(async () => {
-  pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  const { rows } = await pool.query<{ db: string; usr: string }>(
-    "SELECT current_database() AS db, current_user AS usr",
-  );
-  db = rows[0].db;
-  usr = rows[0].usr;
-  await pool.query(`ALTER ROLE "${usr}" IN DATABASE "${db}" SET search_path TO test_evm_activity`);
-  await pool.query("SET search_path TO test_evm_activity");
+  // getPool() is the same pool listEvmActivity()/listEvmBlocks() use — one
+  // pool, scoped to this schema via its own 'connect' event rather than a
+  // role-level default, which would race against every other test file's
+  // pool doing the same thing concurrently. See test/ingest.test.ts for the
+  // full reasoning; this is the same fix.
+  pool = getPool();
+  pool.on("connect", (client) => {
+    client.query("SET search_path TO test_evm_activity").catch(() => {});
+  });
   await pool.query("DROP SCHEMA IF EXISTS test_evm_activity CASCADE");
   await pool.query("CREATE SCHEMA test_evm_activity");
   await pool.query(schemaSql);
 
-  ({ listEvmActivity } = await import("../src/evm/queries.js"));
+  ({ listEvmActivity, listEvmBlocks } = await import("../src/evm/queries.js"));
 
   // Block 1: an ordinary native transfer to ADDR.
   await insertBlock(1, 1_000);
@@ -142,7 +142,6 @@ before(async () => {
 
 after(async () => {
   try {
-    if (usr) await pool?.query(`ALTER ROLE "${usr}" IN DATABASE "${db}" RESET search_path`);
     await pool?.query("DROP SCHEMA IF EXISTS test_evm_activity CASCADE");
   } finally {
     await pool?.end();
@@ -204,4 +203,20 @@ test("cursor pagination does not skip or duplicate the tied pair at block 2", as
   assert.equal(page2[0].hash, "0xaaa2");
   assert.equal(page2[0].token, "native");
   assert.equal(page2[1].hash, "0xaaa1");
+});
+
+test("listEvmBlocks returns newest-first, paginated by block number", async () => {
+  const rows = await listEvmBlocks(NETWORK, 2);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].blockNumber, "4");
+  assert.equal(rows[1].blockNumber, "3");
+  // blockNumber/gasUsed/gasLimit stay strings — same precision rule as
+  // everywhere else in this codebase.
+  assert.equal(typeof rows[0].blockNumber, "string");
+  assert.equal(typeof rows[0].gasUsed, "string");
+
+  const nextPage = await listEvmBlocks(NETWORK, 2, 3);
+  assert.equal(nextPage.length, 2);
+  assert.equal(nextPage[0].blockNumber, "2");
+  assert.equal(nextPage[1].blockNumber, "1");
 });

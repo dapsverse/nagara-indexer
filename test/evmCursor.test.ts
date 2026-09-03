@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { Pool } from "pg";
+import { getPool } from "../src/db.js";
 
 // Regression coverage for the incident that motivated the tip/backfill
 // split: a stray cursor value from an earlier chain incarnation left
@@ -14,23 +14,22 @@ import { Pool } from "pg";
 const NETWORK = "test_evm_cursor";
 const schemaSql = readFileSync(new URL("../src/schema.sql", import.meta.url), "utf8");
 
-let pool: Pool;
+let pool: ReturnType<typeof getPool>;
 let readCursors: typeof import("../src/evm/runEvmIndexer.js")["readCursors"];
 let initCursors: typeof import("../src/evm/runEvmIndexer.js")["initCursors"];
 let advanceLastBlock: typeof import("../src/evm/runEvmIndexer.js")["advanceLastBlock"];
 let advanceBackfillBlock: typeof import("../src/evm/runEvmIndexer.js")["advanceBackfillBlock"];
-let db = "";
-let usr = "";
 
 before(async () => {
-  pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  const { rows } = await pool.query<{ db: string; usr: string }>(
-    "SELECT current_database() AS db, current_user AS usr",
-  );
-  db = rows[0].db;
-  usr = rows[0].usr;
-  await pool.query(`ALTER ROLE "${usr}" IN DATABASE "${db}" SET search_path TO test_evm_cursor`);
-  await pool.query("SET search_path TO test_evm_cursor");
+  // getPool() is the same pool readCursors()/advanceLastBlock()/etc use —
+  // scoped to this schema via its own 'connect' event, not a role-level
+  // default (which would race against every other test file's pool setting
+  // its own default concurrently — see test/ingest.test.ts for the incident
+  // this caused).
+  pool = getPool();
+  pool.on("connect", (client) => {
+    client.query("SET search_path TO test_evm_cursor").catch(() => {});
+  });
   await pool.query("DROP SCHEMA IF EXISTS test_evm_cursor CASCADE");
   await pool.query("CREATE SCHEMA test_evm_cursor");
   await pool.query(schemaSql);
@@ -42,7 +41,6 @@ before(async () => {
 
 after(async () => {
   try {
-    if (usr) await pool?.query(`ALTER ROLE "${usr}" IN DATABASE "${db}" RESET search_path`);
     await pool?.query("DROP SCHEMA IF EXISTS test_evm_cursor CASCADE");
   } finally {
     await pool?.end();
