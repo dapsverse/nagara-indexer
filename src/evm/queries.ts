@@ -1,5 +1,39 @@
 import type { NetworkId } from "../config.js";
 import { getPool } from "../db.js";
+import type { IndexerStatus } from "../queries.js";
+
+/**
+ * The EVM-chain equivalent of `indexerStatus()` — same shape, read from
+ * `evm_cursor`/`evm_block`/`evm_tx` instead of `indexer_state`/`block`/`tx`.
+ * `evm_cursor` has no `updated_at` column, so that field is always null here;
+ * polling this twice and comparing `lastIndexedBlock` answers "is it moving"
+ * just as well.
+ */
+export async function evmIndexerStatus(network: NetworkId): Promise<IndexerStatus> {
+  const pool = getPool();
+  const [cursor, counts] = await Promise.all([
+    pool.query<{ last_indexed_block: string; backfill_block: string | null }>(
+      `SELECT last_indexed_block, backfill_block FROM evm_cursor WHERE network = $1`,
+      [network],
+    ),
+    pool.query<{ blocks: string; txns: string }>(
+      `SELECT (SELECT count(*) FROM evm_block WHERE network = $1) AS blocks,
+              (SELECT count(*) FROM evm_tx    WHERE network = $1) AS txns`,
+      [network],
+    ),
+  ]);
+
+  const row = cursor.rows[0];
+  return {
+    network,
+    lastIndexedBlock: row ? Number(row.last_indexed_block) : null,
+    oldestIndexedBlock: row?.backfill_block == null ? null : Number(row.backfill_block),
+    historyComplete: row?.backfill_block === "0",
+    updatedAt: null,
+    indexedBlocks: Number(counts.rows[0].blocks),
+    indexedTransactions: Number(counts.rows[0].txns),
+  };
+}
 
 export type EvmBlockRow = {
   blockNumber: string;

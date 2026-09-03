@@ -20,7 +20,7 @@ import {
   listTokens,
   listTransactions,
 } from "./queries.js";
-import { listEvmActivity, listEvmBlocks } from "./evm/queries.js";
+import { evmIndexerStatus, listEvmActivity, listEvmBlocks } from "./evm/queries.js";
 import { getPriceQuote } from "./price.js";
 
 /**
@@ -120,7 +120,11 @@ export function createServer(): http.Server {
         case "/status": {
           const networks = Object.keys(NETWORKS) as NetworkId[];
           send(response, 200, {
-            networks: await Promise.all(networks.map(indexerStatus)),
+            networks: await Promise.all(
+              networks.map((n) =>
+                NETWORKS[n].chainType === "evm" ? evmIndexerStatus(n) : indexerStatus(n)
+              )
+            ),
           });
           return;
         }

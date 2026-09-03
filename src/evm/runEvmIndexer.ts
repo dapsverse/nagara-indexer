@@ -177,11 +177,28 @@ export async function runEvmNetworkIndexer(network: NetworkId): Promise<void> {
   if (config.chainType !== "evm") {
     throw new Error(`${network} is not an evm network`);
   }
-  const client = createEvmClient(config.rpcHttpUrl, config.chainId);
 
-  const head = (await client.getBlock({ blockTag: "finalized" })).number;
-  await initCursors(network, head);
-  log(network, `connected, head #${head}`);
+  // The caller (runIndexer) invokes this once per process lifetime and only
+  // logs a rejection, it never retries — so a transient failure anywhere in
+  // here (a slow RPC response, Postgres not yet accepting connections right
+  // after boot, a DNS blip) must not permanently disable this network's
+  // indexing until the next deploy restarts the process. followTip/backfill
+  // already retry forever once started; this loop covers the startup step
+  // itself, which previously ran exactly once with no way back in.
+  for (;;) {
+    try {
+      const client = createEvmClient(config.rpcHttpUrl, config.chainId);
+      const head = (await client.getBlock({ blockTag: "finalized" })).number;
+      await initCursors(network, head);
+      log(network, `connected, head #${head}`);
 
-  await Promise.all([followTip(client, network), backfill(client, network)]);
+      // Resolves only if followTip or backfill throws past its own internal
+      // retry — shouldn't happen, but if it does, fall through and restart
+      // clean rather than leaving the network silently unindexed.
+      await Promise.all([followTip(client, network), backfill(client, network)]);
+    } catch (error) {
+      log(network, `startup error, retrying: ${(error as Error).message}`);
+      await sleep(POLL_MS);
+    }
+  }
 }

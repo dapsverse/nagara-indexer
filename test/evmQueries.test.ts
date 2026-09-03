@@ -13,6 +13,7 @@ const schemaSql = readFileSync(new URL("../src/schema.sql", import.meta.url), "u
 let pool: ReturnType<typeof getPool>;
 let listEvmActivity: typeof import("../src/evm/queries.js")["listEvmActivity"];
 let listEvmBlocks: typeof import("../src/evm/queries.js")["listEvmBlocks"];
+let evmIndexerStatus: typeof import("../src/evm/queries.js")["evmIndexerStatus"];
 
 async function insertBlock(number: number, tsSeconds: number) {
   await pool.query(
@@ -103,7 +104,7 @@ before(async () => {
   await pool.query("CREATE SCHEMA test_evm_activity");
   await pool.query(schemaSql);
 
-  ({ listEvmActivity, listEvmBlocks } = await import("../src/evm/queries.js"));
+  ({ listEvmActivity, listEvmBlocks, evmIndexerStatus } = await import("../src/evm/queries.js"));
 
   // Block 1: an ordinary native transfer to ADDR.
   await insertBlock(1, 1_000);
@@ -219,4 +220,14 @@ test("listEvmBlocks returns newest-first, paginated by block number", async () =
   assert.equal(nextPage.length, 2);
   assert.equal(nextPage[0].blockNumber, "2");
   assert.equal(nextPage[1].blockNumber, "1");
+});
+
+test("evmIndexerStatus counts blocks/txs and reports no cursor as null", async () => {
+  const status = await evmIndexerStatus(NETWORK);
+  assert.equal(status.network, NETWORK);
+  assert.equal(status.indexedBlocks, 4);
+  assert.equal(status.indexedTransactions, 4);
+  // No evm_cursor row was ever inserted for this network in this suite.
+  assert.equal(status.lastIndexedBlock, null);
+  assert.equal(status.oldestIndexedBlock, null);
 });
