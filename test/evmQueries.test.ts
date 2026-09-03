@@ -100,9 +100,17 @@ before(async () => {
   pool.on("connect", (client) => {
     client.query("SET search_path TO test_evm_activity").catch(() => {});
   });
-  await pool.query("DROP SCHEMA IF EXISTS test_evm_activity CASCADE");
-  await pool.query("CREATE SCHEMA test_evm_activity");
-  await pool.query(schemaSql);
+  // One held client, not pool.query() — guarantees these statements queue
+  // strictly after the 'connect' handler's SET search_path on the same
+  // connection, no race between the two.
+  const setup = await pool.connect();
+  try {
+    await setup.query("DROP SCHEMA IF EXISTS test_evm_activity CASCADE");
+    await setup.query("CREATE SCHEMA test_evm_activity");
+    await setup.query(schemaSql);
+  } finally {
+    setup.release();
+  }
 
   ({ listEvmActivity, listEvmBlocks, evmIndexerStatus } = await import("../src/evm/queries.js"));
 

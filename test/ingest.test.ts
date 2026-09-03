@@ -129,9 +129,18 @@ before(async () => {
   pool.on("connect", (client) => {
     client.query("SET search_path TO test_ingest").catch(() => {});
   });
-  await pool.query("DROP SCHEMA IF EXISTS test_ingest CASCADE");
-  await pool.query("CREATE SCHEMA test_ingest");
-  await pool.query(schemaSql);
+  // Run schema setup through one held client rather than pool.query() (which
+  // may hand out any connection): guarantees these statements queue on the
+  // same connection the 'connect' handler above just set search_path on,
+  // strictly after it, with no race between the two.
+  const setup = await pool.connect();
+  try {
+    await setup.query("DROP SCHEMA IF EXISTS test_ingest CASCADE");
+    await setup.query("CREATE SCHEMA test_ingest");
+    await setup.query(schemaSql);
+  } finally {
+    setup.release();
+  }
 });
 
 after(async () => {

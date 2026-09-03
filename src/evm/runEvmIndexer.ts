@@ -1,6 +1,6 @@
 import type { PublicClient } from "viem";
 import { BlockNotFoundError } from "viem";
-import { createEvmClient } from "./rpc.js";
+import { getEvmClient } from "./rpc.js";
 import { ingestBlock } from "./ingest.js";
 import { getPool } from "../db.js";
 import { NETWORKS, type NetworkId } from "../config.js";
@@ -187,7 +187,7 @@ export async function runEvmNetworkIndexer(network: NetworkId): Promise<void> {
   // itself, which previously ran exactly once with no way back in.
   for (;;) {
     try {
-      const client = createEvmClient(config.rpcHttpUrl, config.chainId);
+      const client = getEvmClient(network);
       const head = (await client.getBlock({ blockTag: "finalized" })).number;
       await initCursors(network, head);
       log(network, `connected, head #${head}`);

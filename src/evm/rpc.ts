@@ -1,4 +1,5 @@
 import { createPublicClient, http, defineChain, type PublicClient } from "viem";
+import { NETWORKS, type NetworkId } from "../config.js";
 
 /**
  * One client per network — this process may run more than one EVM network
@@ -13,6 +14,27 @@ export function createEvmClient(rpcHttpUrl: string, chainId: number): PublicClie
     rpcUrls: { default: { http: [rpcHttpUrl] } },
   });
   return createPublicClient({ chain, transport: http() });
+}
+
+const clients = new Map<NetworkId, PublicClient>();
+
+/**
+ * The shared client for an EVM network — created once, reused by both the
+ * indexer loop and the HTTP API (e.g. `/balance`). Cheap to cache: an HTTP
+ * transport has no persistent connection to keep alive, just config to avoid
+ * rebuilding on every call.
+ */
+export function getEvmClient(network: NetworkId): PublicClient {
+  let client = clients.get(network);
+  if (!client) {
+    const config = NETWORKS[network];
+    if (config.chainType !== "evm") {
+      throw new Error(`${network} is not an evm network`);
+    }
+    client = createEvmClient(config.rpcHttpUrl, config.chainId);
+    clients.set(network, client);
+  }
+  return client;
 }
 
 export type RpcReceipt = {

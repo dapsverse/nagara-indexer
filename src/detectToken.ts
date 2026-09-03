@@ -19,7 +19,7 @@ export type TokenInfo = {
  * so the payload can be read without the contract's ABI as long as the standard
  * fixes the type — which is the whole point of NKRI08.
  */
-function decodeOk(data: string, type: "Text" | "u128"): string | null {
+export function decodeOk(data: string, type: "Text" | "u128"): string | null {
   try {
     const bytes = hexToU8a(data);
     if (bytes.length < 1 || bytes[0] !== 0) return null;
@@ -29,10 +29,16 @@ function decodeOk(data: string, type: "Text" | "u128"): string | null {
   }
 }
 
-async function callMessage(
+/**
+ * Dry-runs one ink! message call and returns its raw response bytes (hex), or
+ * null on any error. `data` is the full call payload — a bare selector for a
+ * no-argument message like `name`, or a selector with SCALE-encoded arguments
+ * appended for one that takes them (e.g. `balance_of`).
+ */
+export async function callContract(
   api: ApiPromise,
   address: string,
-  message: string
+  data: string
 ): Promise<string | null> {
   try {
     // ContractsApi_call takes gasLimit as Option<WeightV2>; passing a bare
@@ -47,7 +53,7 @@ async function callMessage(
       null,
       // Passed as hex, not as a Uint8Array: a Vec<u8> parameter treats raw bytes
       // as already-SCALE-encoded and reads the first byte as a length prefix.
-      NKRI08_SELECTORS[message]
+      data
     );
 
     const json = result.toJSON() as {
@@ -75,9 +81,9 @@ export async function detectToken(
   address: string
 ): Promise<TokenInfo | null> {
   const [nameData, symbolData, supplyData] = await Promise.all([
-    callMessage(api, address, "name"),
-    callMessage(api, address, "symbol"),
-    callMessage(api, address, "total_supply"),
+    callContract(api, address, NKRI08_SELECTORS.name),
+    callContract(api, address, NKRI08_SELECTORS.symbol),
+    callContract(api, address, NKRI08_SELECTORS.total_supply),
   ]);
 
   if (!nameData || !symbolData || !supplyData) return null;
