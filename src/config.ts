@@ -26,6 +26,8 @@ export type SubstrateNetworkConfig = {
    * at the wall and resumes from its cursor once this is set.
    */
   archiveWsUrl?: string;
+  /** MINAR's ink! contract address, when deployed on this network. */
+  minarAddress?: string;
 };
 
 export type EvmNetworkConfig = {
@@ -35,6 +37,8 @@ export type EvmNetworkConfig = {
   /** JSON-RPC HTTP endpoint — Frontier's Ethereum-compatible RPC. */
   rpcHttpUrl: string;
   chainId: number;
+  /** MINAR's ERC-20 contract address, when deployed on this network. */
+  minarAddress?: string;
 };
 
 export type NetworkConfig = SubstrateNetworkConfig | EvmNetworkConfig;
@@ -49,6 +53,7 @@ export const NETWORKS: Record<NetworkId, NetworkConfig> = {
     chainType: "substrate",
     wsUrl: env("MAINNET_WS_URL") ?? "wss://bootnode.nagara.network",
     archiveWsUrl: env("MAINNET_ARCHIVE_WS_URL"),
+    minarAddress: env("MAINNET_MINAR_ADDRESS"),
   },
   testnet: {
     id: "testnet",
@@ -56,6 +61,7 @@ export const NETWORKS: Record<NetworkId, NetworkConfig> = {
     chainType: "evm",
     rpcHttpUrl: env("TESTNET_RPC_HTTP_URL") ?? "https://testnet.nagara.network",
     chainId: Number(env("TESTNET_CHAIN_ID") ?? "16869"),
+    minarAddress: env("TESTNET_MINAR_ADDRESS"),
   },
 };
 

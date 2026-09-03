@@ -22,6 +22,9 @@ import {
 } from "./queries.js";
 import { evmIndexerStatus, listEvmActivity, listEvmBlocks } from "./evm/queries.js";
 import { getPriceQuote } from "./price.js";
+import { getEvmBalances } from "./evm/balance.js";
+import { getSubstrateBalances } from "./balance.js";
+import { getApi } from "./chainApi.js";
 
 /**
  * Endpoints reachable without a key. Only the liveness probe: a load balancer
@@ -278,6 +281,33 @@ export function createServer(): http.Server {
             // honest number to return, and a stale one would be quoted as real.
             send(response, 503, {
               error: `price unavailable: ${(error as Error).message}`,
+            });
+          }
+          return;
+        }
+
+        case "/balance": {
+          const network = readNetwork(params);
+          const walletAddress = params.get("wallet_address");
+          if (!walletAddress) {
+            send(response, 400, { error: "wallet_address is required" });
+            return;
+          }
+          try {
+            const balances =
+              NETWORKS[network].chainType === "evm"
+                ? await getEvmBalances(network, walletAddress)
+                : await (async () => {
+                    const api = await getApi(network);
+                    if (!api) throw new Error(`no chain connection for ${network}`);
+                    return getSubstrateBalances(api, network, walletAddress, NETWORKS[network].minarAddress);
+                  })();
+            send(response, 200, { network, address: walletAddress, balances });
+          } catch (error) {
+            // No connection, or an address the chain rejects. Either way there
+            // is no honest balance to return, and a stale one is worse than none.
+            send(response, 503, {
+              error: `balance unavailable: ${(error as Error).message}`,
             });
           }
           return;
