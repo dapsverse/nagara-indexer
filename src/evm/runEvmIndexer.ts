@@ -1,3 +1,4 @@
+import type { PublicClient } from "viem";
 import { BlockNotFoundError } from "viem";
 import { createEvmClient } from "./rpc.js";
 import { ingestBlock } from "./ingest.js";
@@ -12,36 +13,164 @@ const log = (network: NetworkId, message: string) =>
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function readCursor(network: NetworkId): Promise<bigint | null> {
-  const { rows } = await getPool().query<{ last_indexed_block: string }>(
-    "SELECT last_indexed_block FROM evm_cursor WHERE network = $1",
+export type Cursors = { lastBlock: bigint | null; backfillBlock: bigint | null };
+
+export async function readCursors(network: NetworkId): Promise<Cursors> {
+  const { rows } = await getPool().query<{
+    last_indexed_block: string;
+    backfill_block: string | null;
+  }>(
+    "SELECT last_indexed_block, backfill_block FROM evm_cursor WHERE network = $1",
     [network],
   );
-  return rows.length ? BigInt(rows[0].last_indexed_block) : null;
+  if (!rows.length) return { lastBlock: null, backfillBlock: null };
+  return {
+    lastBlock: BigInt(rows[0].last_indexed_block),
+    backfillBlock: rows[0].backfill_block === null ? null : BigInt(rows[0].backfill_block),
+  };
 }
 
-/**
- * Moves the cursor past a block whose body the RPC node no longer has. The
- * gap is permanent — that block can never be indexed from this node — so it
- * is logged rather than swallowed.
- */
-async function skipBlock(network: NetworkId, n: bigint): Promise<void> {
+/** First-ever run for this network: seed both cursors at the current head. */
+export async function initCursors(network: NetworkId, head: bigint): Promise<void> {
   await getPool().query(
-    `INSERT INTO evm_cursor (network, last_indexed_block) VALUES ($1,$2)
-     ON CONFLICT (network) DO UPDATE
-       SET last_indexed_block = GREATEST(evm_cursor.last_indexed_block, EXCLUDED.last_indexed_block)`,
+    `INSERT INTO evm_cursor (network, last_indexed_block, backfill_block)
+     VALUES ($1, $2, $2)
+     ON CONFLICT (network) DO NOTHING`,
+    [network, head.toString()],
+  );
+}
+
+export async function advanceLastBlock(network: NetworkId, n: bigint): Promise<void> {
+  await getPool().query(
+    `UPDATE evm_cursor SET last_indexed_block = GREATEST(last_indexed_block, $2)
+       WHERE network = $1`,
+    [network, n.toString()],
+  );
+}
+
+export async function advanceBackfillBlock(network: NetworkId, n: bigint): Promise<void> {
+  await getPool().query(
+    `UPDATE evm_cursor SET backfill_block = $2 WHERE network = $1`,
     [network, n.toString()],
   );
 }
 
 /**
- * Indexes one EVM-typed network: a single sequential walk from its cursor to
- * the finalized head, polling for new blocks once caught up.
- *
- * Unlike the substrate path's tip-follower/backfiller split, there is no
- * "show the live tip now, fill in history behind it" behavior here — accepted
- * for now because the EVM chains this indexes are young. See the design
- * spec's "Known limitations" section.
+ * Ingests one block, retrying once on a transient RPC miss. `onGap` decides
+ * what a block that never becomes available means for the caller's cursor —
+ * the forward and backward loops disagree about that, so it's a parameter
+ * rather than a fixed behavior here.
+ */
+async function ingestOrGap(
+  client: PublicClient,
+  network: NetworkId,
+  n: bigint,
+  onGap: (n: bigint) => Promise<void>,
+): Promise<void> {
+  try {
+    await ingestBlock(client, network, n);
+  } catch (error) {
+    if (!(error instanceof BlockNotFoundError)) throw error;
+    // Retried once before giving up: a finalized block that is briefly
+    // absent is an RPC hiccup, one that is still absent has been pruned.
+    await sleep(POLL_MS);
+    try {
+      await ingestBlock(client, network, n);
+      return;
+    } catch (again) {
+      if (!(again instanceof BlockNotFoundError)) throw again;
+    }
+    await onGap(n);
+  }
+}
+
+/**
+ * Forward loop: keeps the newest blocks indexed, in near real time. Starts
+ * above whatever `last_indexed_block` already covers — on a fresh network
+ * that's the head at startup, so new activity shows up within one poll
+ * interval regardless of how much history is still being backfilled.
+ */
+async function followTip(client: PublicClient, network: NetworkId): Promise<void> {
+  for (;;) {
+    try {
+      const head = (await client.getBlock({ blockTag: "finalized" })).number;
+      const { lastBlock } = await readCursors(network);
+      let next = (lastBlock ?? head) + 1n;
+
+      if (next > head) {
+        await sleep(POLL_MS);
+        continue;
+      }
+
+      const end = next + BigInt(BATCH) - 1n > head ? head : next + BigInt(BATCH) - 1n;
+      for (; next <= end; next++) {
+        await ingestOrGap(client, network, next, async (n) => {
+          // A gap in the live tip is unusual (the finalized head shouldn't be
+          // pruned), but skipping past it is still correct: never blocking
+          // the tip forever on one unreachable block.
+          log(network, `tip: block ${n} unavailable — skipping, gap is permanent`);
+        });
+      }
+      await advanceLastBlock(network, end);
+      log(network, `tip → #${end}`);
+    } catch (error) {
+      log(network, `tip error, retrying: ${(error as Error).message}`);
+      await sleep(POLL_MS);
+    }
+  }
+}
+
+/**
+ * Backward loop: fills history from the cursor down to block 0, independent
+ * of the tip. Stops (rather than skipping ahead) the moment a block is
+ * unavailable — below that point the RPC node has no data at all, so there is
+ * nothing further back worth attempting.
+ */
+async function backfill(client: PublicClient, network: NetworkId): Promise<void> {
+  for (;;) {
+    try {
+      const { backfillBlock } = await readCursors(network);
+      if (backfillBlock === null) {
+        await sleep(1000);
+        continue;
+      }
+      if (backfillBlock <= 0n) {
+        log(network, "history complete — backfill reached block 0");
+        return;
+      }
+
+      const to = backfillBlock - 1n;
+      const wanted = to - BigInt(BATCH) + 1n;
+      const from = wanted > 0n ? wanted : 0n;
+
+      let stopped = false;
+      for (let n = to; n >= from; n--) {
+        if (stopped) break;
+        await ingestOrGap(client, network, n, async (gapN) => {
+          log(
+            network,
+            `history unavailable below #${gapN + 1n}: RPC node has no data ` +
+              "further back. Backfill stopped here.",
+          );
+          stopped = true;
+        });
+        if (!stopped) await advanceBackfillBlock(network, n);
+      }
+      if (stopped) return;
+
+      log(network, `history ← #${from} (${to - from + 1n} blocks)`);
+    } catch (error) {
+      log(network, `backfill error, retrying: ${(error as Error).message}`);
+      await sleep(5000);
+    }
+  }
+}
+
+/**
+ * Indexes one EVM-typed network: tip forwards from wherever it started,
+ * history backwards from the same starting point. The two run concurrently
+ * and never block each other, mirroring the substrate path's design — recent
+ * activity is visible immediately, old history fills in behind it.
  */
 export async function runEvmNetworkIndexer(network: NetworkId): Promise<void> {
   const config = NETWORKS[network];
@@ -50,44 +179,9 @@ export async function runEvmNetworkIndexer(network: NetworkId): Promise<void> {
   }
   const client = createEvmClient(config.rpcHttpUrl, config.chainId);
 
-  async function ingestOrSkip(n: bigint): Promise<void> {
-    try {
-      await ingestBlock(client, network, n);
-    } catch (error) {
-      if (!(error instanceof BlockNotFoundError)) throw error;
-      // Retried once before giving up: a finalized block that is briefly
-      // absent is an RPC hiccup, one that is still absent has been pruned.
-      await sleep(POLL_MS);
-      try {
-        await ingestBlock(client, network, n);
-        return;
-      } catch (again) {
-        if (!(again instanceof BlockNotFoundError)) throw again;
-      }
-      log(network, `block ${n} is not available from the RPC node (pruned) — skipping, gap is permanent`);
-      await skipBlock(network, n);
-    }
-  }
+  const head = (await client.getBlock({ blockTag: "finalized" })).number;
+  await initCursors(network, head);
+  log(network, `connected, head #${head}`);
 
-  for (;;) {
-    try {
-      const cursor = await readCursor(network);
-      let next = cursor === null ? 0n : cursor + 1n;
-      const head = (await client.getBlock({ blockTag: "finalized" })).number;
-
-      if (next > head) {
-        await sleep(POLL_MS);
-        continue;
-      }
-
-      const end = next + BigInt(BATCH) - 1n > head ? head : next + BigInt(BATCH) - 1n;
-      for (; next <= end; next++) await ingestOrSkip(next);
-      log(network, `indexed up to ${end} / ${head}`);
-    } catch (error) {
-      // Never exit on a transient RPC failure — the cursor is durable, so the
-      // next pass resumes exactly where this one stopped.
-      log(network, `indexer error, retrying: ${(error as Error).message}`);
-      await sleep(POLL_MS);
-    }
-  }
+  await Promise.all([followTip(client, network), backfill(client, network)]);
 }
