@@ -1,15 +1,20 @@
 export type NetworkId = "mainnet" | "testnet";
 
 /**
- * Which protocol a network speaks. `mainnet` is still the old ink!/
- * pallet-contracts chain; `testnet` migrated to a sovereign Substrate chain
- * with pallet-ethereum/pallet-evm (Frontier) bolted on. `mainnet` will make
- * the same jump later, as a brand-new genesis chain, not an in-place upgrade.
+ * Which protocol a network speaks. Both networks are now sovereign Substrate
+ * chains with pallet-ethereum/pallet-evm (Frontier) bolted on — `testnet`
+ * migrated first, `mainnet` followed as a brand-new genesis chain (not an
+ * in-place upgrade; the old ink!/pallet-contracts mainnet's data and MINAR
+ * contract do not carry over). `SubstrateNetworkConfig` and the
+ * substrate-only ingestion path stay in this codebase for now — deleting
+ * dead code the moment it goes unused is premature until the old chain is
+ * fully decommissioned and nobody needs to point back at it.
  *
  * Every branch point in this codebase (which ingestion pipeline runs, which
  * tables `/activity` reads) switches on this field, never on the network's
- * name — so migrating mainnet is flipping this value plus its connection
- * fields, not a code change.
+ * name — migrating a network is flipping this value plus its connection
+ * fields, not a code change. This file is the only diff mainnet's migration
+ * required.
  */
 export type ChainType = "substrate" | "evm";
 
@@ -50,9 +55,20 @@ export const NETWORKS: Record<NetworkId, NetworkConfig> = {
   mainnet: {
     id: "mainnet",
     label: "Mainnet",
-    chainType: "substrate",
-    wsUrl: env("MAINNET_WS_URL") ?? "wss://bootnode.nagara.network",
-    archiveWsUrl: env("MAINNET_ARCHIVE_WS_URL"),
+    chainType: "evm",
+    // Same hostname as the old chain's wsUrl — the new EVM mainnet answers on
+    // the same box, just over HTTP/eth_* instead of WS/state_* only. Override
+    // with MAINNET_RPC_HTTP_URL if that's wrong once the new validators/RPC
+    // node are actually provisioned.
+    rpcHttpUrl: env("MAINNET_RPC_HTTP_URL") ?? "https://bootnode.nagara.network",
+    // Confirmed in apps/evm's CLAUDE.md ("Chain IDs: mainnet 16868, testnet
+    // 16869") — not a guess, unlike the hostname above.
+    chainId: Number(env("MAINNET_CHAIN_ID") ?? "16868"),
+    // The OLD ink! MINAR's address does not carry over — this is a brand-new
+    // genesis chain. Leave unset until MINAR is redeployed as a Solidity
+    // ERC-20 here (see apps/evm's CLAUDE.md §Next); a leftover SS58-shaped
+    // value from the old chain would just fail every call, not silently
+    // read the wrong contract, but don't carry it forward regardless.
     minarAddress: env("MAINNET_MINAR_ADDRESS"),
   },
   testnet: {
