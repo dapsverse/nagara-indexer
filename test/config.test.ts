@@ -2,8 +2,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { NETWORKS } from "../src/config.js";
 
-test("mainnet is still the substrate chain type", () => {
-  assert.equal(NETWORKS.mainnet.chainType, "substrate");
+test("mainnet is the evm chain type", () => {
+  assert.equal(NETWORKS.mainnet.chainType, "evm");
+});
+
+test("mainnet has its own chain id, distinct from testnet's", () => {
+  assert.equal(NETWORKS.mainnet.chainType, "evm");
+  if (NETWORKS.mainnet.chainType === "evm") {
+    assert.equal(NETWORKS.mainnet.chainId, 16868);
+  }
 });
 
 test("testnet is the evm chain type", () => {
