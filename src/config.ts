@@ -56,11 +56,14 @@ export const NETWORKS: Record<NetworkId, NetworkConfig> = {
     id: "mainnet",
     label: "Mainnet",
     chainType: "evm",
-    // Same hostname as the old chain's wsUrl — the new EVM mainnet answers on
-    // the same box, just over HTTP/eth_* instead of WS/state_* only. Override
-    // with MAINNET_RPC_HTTP_URL if that's wrong once the new validators/RPC
-    // node are actually provisioned.
-    rpcHttpUrl: env("MAINNET_RPC_HTTP_URL") ?? "https://bootnode.nagara.network",
+    // The new mainnet's own RPC nodes, not the old chain's bootnode — that box
+    // answers for the ink!/pallet-contracts chain, not this one. Verified live
+    // 2026-09-08: chain id 16868, 4/4 validator peers, finalized == best block
+    // on both rpc1 and rpc2. DNS/TLS for these hostnames was still being
+    // registered with Cloudflare as of that check, so this may 404/refuse
+    // until that lands — override with MAINNET_RPC_HTTP_URL if it's not live
+    // yet and you need the raw IP (203.145.34.119 or 103.217.144.105) instead.
+    rpcHttpUrl: env("MAINNET_RPC_HTTP_URL") ?? "https://rpc1.nagara.network",
     // Confirmed in apps/evm's CLAUDE.md ("Chain IDs: mainnet 16868, testnet
     // 16869") — not a guess, unlike the hostname above.
     chainId: Number(env("MAINNET_CHAIN_ID") ?? "16868"),
